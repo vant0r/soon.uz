@@ -1,20 +1,24 @@
 ```
-# Compiled and build artifacts
-*.pyc
-__pycache__/
+# Build artifacts
+dist/
+build/
+*.o
+*.obj
+*.out
 
 # Dependencies
+node_modules/
 vendor/
-composer.lock
 
 # Logs and temp files
 *.log
 *.tmp
+*.swp
 
 # Environment
 .env
 .env.local
-*.env.*
+.env.*
 
 # Editors
 .vscode/
@@ -23,4 +27,13 @@ composer.lock
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# PHP specific
+*.php~
+*.php.bak
+
+# Web server
+.htaccess
+robots.txt
+sitemap.xml
 ```
