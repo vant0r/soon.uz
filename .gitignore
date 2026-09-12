@@ -1,39 +1,13 @@
-```
-# Build artifacts
-dist/
-build/
-*.o
-*.obj
-*.out
-
+```gitignore
 # Dependencies
-node_modules/
 vendor/
 
 # Logs and temp files
 *.log
 *.tmp
-*.swp
 
 # Environment
 .env
 .env.local
-.env.*
-
-# Editors
-.vscode/
-.idea/
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# PHP specific
-*.php~
-*.php.bak
-
-# Web server
-.htaccess
-robots.txt
-sitemap.xml
+*.env.*
 ```
