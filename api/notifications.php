@@ -33,9 +33,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!verifyCsrfTokenFromRequest()) {
-        apiError('CSRF tekshiruvi muvaffaqiyatsiz.', 403);
-    }
     $data = json_decode(file_get_contents('php://input'), true);
     if (!is_array($data)) {
         apiError('Noto\'g\'ri so\'rov formati.', 400);
