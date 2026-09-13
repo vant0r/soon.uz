@@ -1,502 +1,84 @@
 <?php
-/**
- * Admin - User Management
- * View and manage users
- */
-
 require_once __DIR__ . '/../includes/functions.php';
 requireAdmin();
 
 $admin = getCurrentAdmin();
 $message = '';
 $messageType = '';
+$validStatuses = ['active', 'blocked', 'deleted'];
 
-// Handle user status update
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
-        $message = 'Xavfsizlik tokeni noto\'g\'ri';
+        $message = 'Xavfsizlik tokeni noto‘g‘ri';
         $messageType = 'error';
     } else {
-        $action = $_POST['action'];
-        
-        if ($action === 'update_status') {
+        try {
+            $action = $_POST['action'] ?? '';
             $id = (int) ($_POST['id'] ?? 0);
-            $status = $_POST['status'] ?? '';
-            
-            $validStatuses = ['active', 'blocked', 'deleted'];
-            if (!in_array($status, $validStatuses)) {
-                $message = 'Noto\'g\'ri holat';
-                $messageType = 'error';
-            } else {
-                $user = dbFetchOne("SELECT * FROM users WHERE id = :id", ['id' => $id]);
-                if ($user) {
+            if ($action === 'update_status') {
+                $status = $_POST['status'] ?? '';
+                if ($id < 1 || !in_array($status, $validStatuses, true)) throw new RuntimeException('Noto‘g‘ri ma’lumot');
+                $user = dbFetchOne('SELECT * FROM users WHERE id = :id', ['id' => $id]);
+                if (!$user) throw new RuntimeException('Foydalanuvchi topilmadi');
+                if ($user['status'] !== $status) {
                     dbUpdate('users', ['status' => $status], 'id = :id', ['id' => $id]);
-                    logAdminAction($admin['id'], 'user_status_update', 'user', $id, [
-                        'old_status' => $user['status'],
-                        'new_status' => $status
-                    ]);
-                    $message = 'Foydalanuvchi holati yangilandi';
-                    $messageType = 'success';
+                    logAdminAction($admin['id'], 'user_status_update', 'user', $id, ['old_status' => $user['status'], 'new_status' => $status]);
                 }
+                $message = 'Foydalanuvchi holati yangilandi';
+                $messageType = 'success';
             }
+        } catch (Throwable $e) {
+            $message = $e->getMessage();
+            $messageType = 'error';
         }
     }
 }
 
-// Pagination
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $perPage = 20;
-$totalUsers = dbFetchOne("SELECT COUNT(*) as count FROM users")['count'];
+$totalUsers = (int) (dbFetchOne('SELECT COUNT(*) AS count FROM users')['count'] ?? 0);
 $pagination = getPaginationData($totalUsers, $page, $perPage);
-
-// Get users
-$users = dbFetchAll("
-    SELECT u.*, 
-           (SELECT COUNT(*) FROM applications WHERE user_id = u.id) as app_count,
-           (SELECT COUNT(*) FROM chat_messages cm 
-            JOIN chat_threads ct ON cm.thread_id = ct.id 
-            WHERE ct.user_id = u.id) as message_count
-    FROM users u
-    ORDER BY u.created_at DESC
-    LIMIT {$pagination['offset']}, {$pagination['per_page']}
-");
-
-$statusLabels = [
-    'active' => 'Faol',
-    'blocked' => 'Bloklangan',
-    'deleted' => 'O\'chirilgan'
-];
-
-$statusColors = [
-    'active' => '#D1FAE5',
-    'blocked' => '#FEF3C7',
-    'deleted' => '#FEE2E2'
-];
+$users = dbFetchAll('SELECT u.*, (SELECT COUNT(*) FROM applications a WHERE a.user_id = u.id) AS app_count, (SELECT COUNT(*) FROM chat_threads ct WHERE ct.user_id = u.id) AS thread_count, (SELECT COUNT(*) FROM chat_messages cm JOIN chat_threads ct2 ON ct2.id = cm.thread_id WHERE ct2.user_id = u.id) AS message_count FROM users u ORDER BY u.created_at DESC LIMIT ' . (int) $pagination['offset'] . ', ' . (int) $pagination['per_page']);
+$activeUsers = (int) (dbFetchOne("SELECT COUNT(*) AS count FROM users WHERE status = 'active'")['count'] ?? 0);
+$blockedUsers = (int) (dbFetchOne("SELECT COUNT(*) AS count FROM users WHERE status = 'blocked'")['count'] ?? 0);
+$statusLabels = ['active' => 'Faol', 'blocked' => 'Bloklangan', 'deleted' => 'O‘chirilgan'];
+$csrf = generateCsrfToken();
 ?>
 <!DOCTYPE html>
 <html lang="uz">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Foydalanuvchilar - WebHub Admin</title>
-    <link rel="stylesheet" href="../assets/css/main.css">
-    <style>
-        body { background: var(--bg-secondary); }
-        
-        .admin-layout {
-            display: grid;
-            grid-template-columns: 260px 1fr;
-            min-height: 100vh;
-        }
-        
-        @media (max-width: 1024px) {
-            .admin-layout {
-                grid-template-columns: 1fr;
-            }
-        }
-        
-        .sidebar {
-            background: var(--bg-primary);
-            border-right: 1px solid var(--border-color);
-            padding: 24px;
-            position: sticky;
-            top: 0;
-            height: 100vh;
-            overflow-y: auto;
-        }
-        
-        .logo {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: var(--primary);
-            margin-bottom: 32px;
-            display: block;
-            text-decoration: none;
-        }
-        
-        .nav-menu {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        
-        .nav-link {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px 16px;
-            border-radius: 12px;
-            color: var(--text-secondary);
-            text-decoration: none;
-            transition: all 0.2s ease;
-        }
-        
-        .nav-link:hover, .nav-link.active {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-        }
-        
-        .nav-link.active {
-            background: rgba(59, 130, 246, 0.1);
-            color: var(--primary);
-        }
-        
-        .main-content {
-            padding: 32px;
-        }
-        
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 32px;
-            flex-wrap: wrap;
-            gap: 16px;
-        }
-        
-        .card {
-            background: var(--bg-primary);
-            border-radius: 16px;
-            padding: 24px;
-            margin-bottom: 24px;
-        }
-        
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-        
-        .table-responsive {
-            overflow-x: auto;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        th, td {
-            padding: 12px 16px;
-            text-align: left;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        th {
-            color: var(--text-muted);
-            font-weight: 500;
-            font-size: 0.85rem;
-        }
-        
-        tr:hover {
-            background: var(--bg-secondary);
-        }
-        
-        .status-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-            font-weight: 500;
-        }
-        
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        
-        .alert-success { background: #D1FAE5; color: #047857; }
-        .alert-error { background: #FEE2E2; color: #B91C1C; }
-        
-        .user-avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: var(--primary);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 600;
-            font-size: 1rem;
-        }
-        
-        .pagination {
-            display: flex;
-            justify-content: center;
-            gap: 8px;
-            margin-top: 20px;
-        }
-        
-        .page-btn {
-            padding: 8px 16px;
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            text-decoration: none;
-            transition: all 0.2s ease;
-        }
-        
-        .page-btn:hover, .page-btn.active {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
-        }
-        
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-        }
-        
-        .modal {
-            background: var(--bg-primary);
-            border-radius: 16px;
-            padding: 24px;
-            max-width: 500px;
-            width: 90%;
-        }
-        
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-        
-        .close-modal {
-            background: none;
-            border: none;
-            font-size: 1.5rem;
-            cursor: pointer;
-            color: var(--text-muted);
-        }
-        
-        .detail-row {
-            display: flex;
-            padding: 12px 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .detail-label {
-            font-weight: 500;
-            color: var(--text-muted);
-            width: 120px;
-            flex-shrink: 0;
-        }
-        
-        .detail-value {
-            color: var(--text-primary);
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Foydalanuvchilar — SOON Admin</title>
+<link rel="stylesheet" href="../assets/css/main.css">
+<style>
+:root{--panel:rgba(255,255,255,.78);--panel-strong:rgba(255,255,255,.94);--shadow:0 18px 55px rgba(15,23,42,.08);--radius:24px}body{background:var(--bg-secondary);min-height:100vh}.admin-layout{display:grid;grid-template-columns:270px minmax(0,1fr);min-height:100vh}.sidebar{background:var(--panel);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-right:1px solid var(--border-color);padding:24px;position:sticky;top:0;height:100vh;box-sizing:border-box;overflow:auto}.logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--text-primary);font-size:1.55rem;font-weight:800;letter-spacing:-.04em;margin:2px 0 30px}.logo-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(135deg,var(--primary),var(--accent,#8b5cf6));color:#fff;box-shadow:0 10px 25px rgba(99,102,241,.22)}.nav-menu{display:flex;flex-direction:column;gap:6px}.nav-link{display:flex;align-items:center;gap:11px;padding:12px 14px;border-radius:14px;color:var(--text-secondary);text-decoration:none;transition:.2s ease}.nav-link:hover{background:var(--bg-tertiary);color:var(--text-primary);transform:translateX(2px)}.nav-link.active{background:rgba(99,102,241,.12);color:var(--primary);font-weight:650}.nav-divider{height:1px;background:var(--border-color);margin:10px 0}.main-content{min-width:0;padding:34px}.header{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;margin-bottom:24px}.eyebrow{font-size:.82rem;color:var(--primary);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:7px}.header h1{margin:0;font-size:clamp(1.8rem,3vw,2.55rem);letter-spacing:-.045em}.header p{margin:7px 0 0;color:var(--text-muted)}.header-actions{display:flex;gap:10px;flex-wrap:wrap}.card{background:var(--panel);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border:1px solid var(--border-color);box-shadow:var(--shadow);border-radius:var(--radius);padding:22px;margin-bottom:22px}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:22px}.stat{background:var(--panel-strong);border:1px solid var(--border-color);border-radius:20px;padding:18px}.stat-label{font-size:.85rem;color:var(--text-muted);margin-bottom:8px}.stat-value{font-size:1.75rem;font-weight:800;letter-spacing:-.04em}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px}.toolbar h2{margin:0;font-size:1.1rem}.table-wrap{overflow:auto;border:1px solid var(--border-color);border-radius:18px}table{width:100%;min-width:900px;border-collapse:separate;border-spacing:0;background:var(--panel-strong)}th,td{padding:14px 16px;text-align:left;border-bottom:1px solid var(--border-color);vertical-align:middle}th{font-size:.76rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:700;background:var(--bg-secondary)}tbody tr:last-child td{border-bottom:0}tbody tr:hover{background:var(--bg-secondary)}.user-cell{display:flex;align-items:center;gap:12px;min-width:220px}.avatar{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;overflow:hidden;background:linear-gradient(135deg,var(--primary),var(--accent,#8b5cf6));color:#fff;font-weight:800;flex:none}.avatar img{width:100%;height:100%;object-fit:cover}.user-name{font-weight:700;color:var(--text-primary);white-space:nowrap}.user-email{font-size:.8rem;color:var(--text-muted);margin-top:2px;max-width:210px;overflow:hidden;text-overflow:ellipsis}.status{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;font-size:.78rem;font-weight:700;white-space:nowrap}.status-dot{width:7px;height:7px;border-radius:50%;background:currentColor}.status-active{color:#047857;background:rgba(16,185,129,.12)}.status-blocked{color:#b45309;background:rgba(245,158,11,.13)}.status-deleted{color:#b91c1c;background:rgba(239,68,68,.12)}.muted{color:var(--text-muted)}.actions{display:flex;gap:8px}.btn-mini{border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);border-radius:11px;padding:8px 11px;font:inherit;font-size:.82rem;cursor:pointer;transition:.18s ease}.btn-mini:hover{border-color:var(--primary);color:var(--primary);transform:translateY(-1px)}.pagination{display:flex;justify-content:center;align-items:center;gap:7px;flex-wrap:wrap;margin-top:20px}.page-btn{min-width:38px;height:38px;box-sizing:border-box;display:grid;place-items:center;padding:0 11px;border:1px solid var(--border-color);border-radius:11px;background:var(--bg-secondary);color:var(--text-primary);text-decoration:none;font-size:.86rem}.page-btn:hover,.page-btn.active{background:var(--primary);border-color:var(--primary);color:#fff}.empty{text-align:center;padding:55px 20px;color:var(--text-muted)}.alert{padding:13px 16px;border-radius:14px;margin-bottom:20px;border:1px solid transparent}.alert-success{background:rgba(16,185,129,.11);border-color:rgba(16,185,129,.2);color:#047857}.alert-error{background:rgba(239,68,68,.11);border-color:rgba(239,68,68,.2);color:#b91c1c}.modal-overlay{position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(15,23,42,.48);backdrop-filter:blur(10px)}.modal{width:min(560px,100%);max-height:min(760px,calc(100vh - 36px));overflow:auto;background:var(--panel-strong);border:1px solid var(--border-color);border-radius:26px;box-shadow:0 30px 100px rgba(0,0,0,.2);padding:24px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:18px}.modal-head h3{margin:0;font-size:1.3rem}.close{width:38px;height:38px;border:0;border-radius:12px;background:var(--bg-secondary);color:var(--text-primary);font-size:1.35rem;cursor:pointer}.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.detail{padding:13px;border:1px solid var(--border-color);border-radius:15px;background:var(--bg-secondary)}.detail-label{display:block;font-size:.74rem;color:var(--text-muted);margin-bottom:5px}.detail-value{display:block;word-break:break-word;font-weight:600}.modal-form{margin-top:18px;padding-top:18px;border-top:1px solid var(--border-color)}.form-label{display:block;font-size:.82rem;font-weight:700;margin-bottom:7px}.form-select{width:100%;box-sizing:border-box;padding:11px 13px;border-radius:12px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);font:inherit}.form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:12px}.btn-primary{border:0;background:var(--primary);color:#fff;border-radius:12px;padding:11px 15px;font:inherit;font-weight:700;cursor:pointer}.btn-secondary{border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);border-radius:12px;padding:10px 14px;text-decoration:none;font:inherit;cursor:pointer}@media(max-width:1050px){.admin-layout{grid-template-columns:1fr}.sidebar{position:relative;height:auto;border-right:0;border-bottom:1px solid var(--border-color)}.nav-menu{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}.nav-divider{display:none}.main-content{padding:22px}}@media(max-width:700px){.main-content{padding:15px}.header{align-items:flex-start;flex-direction:column}.stats{grid-template-columns:1fr}.nav-menu{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar{padding:17px}.card{padding:15px;border-radius:19px}.detail-grid{grid-template-columns:1fr}.modal{padding:18px;border-radius:20px}}
+</style>
 </head>
 <body>
-    <div class="admin-layout">
-        <!-- Sidebar -->
-        <aside class="sidebar">
-            <a href="dashboard.php" class="logo">WebHub Admin</a>
-            
-            <nav class="nav-menu">
-                <a href="dashboard.php" class="nav-link">📊 Dashboard</a>
-                <a href="services.php" class="nav-link">🛠 Xizmatlar</a>
-                <a href="portfolio.php" class="nav-link">📁 Portfolio</a>
-                <a href="blog.php" class="nav-link">📝 Blog</a>
-                <a href="applications.php" class="nav-link">📋 Arizalar</a>
-                <a href="users.php" class="nav-link active">👥 Foydalanuvchilar</a>
-                <a href="chat.php" class="nav-link">💬 Chat</a>
-                <a href="settings.php" class="nav-link">⚙ Sozlamalar</a>
-                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 8px 0;">
-                <a href="../index.php" target="_blank" class="nav-link">🌐 Saytni ko'rish</a>
-                <a href="logout.php" class="nav-link" style="color: var(--error);">🚪 Chiqish</a>
-            </nav>
-        </aside>
-        
-        <!-- Main Content -->
-        <main class="main-content">
-            <div class="header">
-                <div>
-                    <h1 style="margin-bottom: 4px;">Foydalanuvchilar</h1>
-                    <p style="color: var(--text-muted);">Jami: <?php echo $totalUsers; ?> nafar</p>
-                </div>
-                <button data-theme-toggle class="btn btn-secondary">🌓 Mavzu</button>
-            </div>
-            
-            <?php if ($message): ?>
-            <div class="alert alert-<?php echo $messageType; ?>"><?php echo e($message); ?></div>
-            <?php endif; ?>
-            
-            <div class="card">
-                <div class="card-header">
-                    <h3>Barcha foydalanuvchilar</h3>
-                </div>
-                
-                <?php if (empty($users)): ?>
-                <p style="color: var(--text-muted); text-align: center; padding: 40px 0;">
-                    Foydalanuvchilar yo'q
-                </p>
-                <?php else: ?>
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Foydalanuvchi</th>
-                                <th>Email</th>
-                                <th>Telefon</th>
-                                <th>Arizalar</th>
-                                <th>Xabarlar</th>
-                                <th>Holat</th>
-                                <th>Ro'yxatdan o'tgan</th>
-                                <th>Amallar</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($users as $user): ?>
-                            <tr>
-                                <td>
-                                    <div style="display: flex; align-items: center; gap: 12px;">
-                                        <div class="user-avatar">
-                                            <?php echo strtoupper(mb_substr($user['name'] ?? 'A', 0, 1)); ?>
-                                        </div>
-                                        <span style="font-weight: 500;"><?php echo e($user['name']); ?></span>
-                                    </div>
-                                </td>
-                                <td><?php echo e($user['email']); ?></td>
-                                <td><?php echo e($user['phone'] ?? '-'); ?></td>
-                                <td><?php echo $user['app_count']; ?></td>
-                                <td><?php echo $user['message_count']; ?></td>
-                                <td>
-                                    <span class="status-badge" style="background: <?php echo $statusColors[$user['status']] ?? '#E5E7EB'; ?>">
-                                        <?php echo $statusLabels[$user['status']] ?? $user['status']; ?>
-                                    </span>
-                                </td>
-                                <td><?php echo date('d.m.Y', strtotime($user['created_at'])); ?></td>
-                                <td>
-                                    <button class="btn btn-sm btn-secondary" onclick="openModal(<?php echo htmlspecialchars(json_encode($user)); ?>)">
-                                        Ko'rish
-                                    </button>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-                
-                <!-- Pagination -->
-                <?php if ($pagination['total_pages'] > 1): ?>
-                <div class="pagination">
-                    <?php if ($pagination['has_prev']): ?>
-                    <a href="?page=<?php echo $page - 1; ?>" class="page-btn">← Oldingi</a>
-                    <?php endif; ?>
-                    
-                    <?php for ($i = 1; $i <= $pagination['total_pages']; $i++): ?>
-                    <a href="?page=<?php echo $i; ?>" class="page-btn <?php echo $i === $page ? 'active' : ''; ?>">
-                        <?php echo $i; ?>
-                    </a>
-                    <?php endfor; ?>
-                    
-                    <?php if ($pagination['has_next']): ?>
-                    <a href="?page=<?php echo $page + 1; ?>" class="page-btn">Keyingi →</a>
-                    <?php endif; ?>
-                </div>
-                <?php endif; ?>
-                <?php endif; ?>
-            </div>
-        </main>
-    </div>
-    
-    <!-- Modal for viewing user details -->
-    <div id="userModal" class="modal-overlay hidden" style="display: none;">
-        <div class="modal">
-            <div class="modal-header">
-                <h3>Foydalanuvchi ma'lumotlari</h3>
-                <button class="close-modal" onclick="closeModal()">×</button>
-            </div>
-            <div id="modalContent"></div>
-            
-            <form method="POST" style="margin-top: 20px;">
-                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
-                <input type="hidden" name="action" value="update_status">
-                <input type="hidden" name="id" id="modalUserId">
-                
-                <div class="form-group">
-                    <label class="form-label">Holatni o'zgartirish</label>
-                    <select name="status" id="modalUserStatus" class="form-select" onchange="this.form.submit()">
-                        <option value="active">Faol</option>
-                        <option value="blocked">Bloklangan</option>
-                        <option value="deleted">O'chirilgan</option>
-                    </select>
-                </div>
-            </form>
-        </div>
-    </div>
-    
-    <script src="../assets/js/main.js"></script>
-    <script>
-        function openModal(user) {
-            document.getElementById('userModal').style.display = 'flex';
-            document.getElementById('modalUserId').value = user.id;
-            document.getElementById('modalUserStatus').value = user.status;
-            
-            document.getElementById('modalContent').innerHTML = `
-                <div class="detail-row">
-                    <span class="detail-label">ID:</span>
-                    <span class="detail-value">#${user.id}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Ism:</span>
-                    <span class="detail-value">${user.name}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Email:</span>
-                    <span class="detail-value">${user.email}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Telefon:</span>
-                    <span class="detail-value">${user.phone || '-'}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Google ID:</span>
-                    <span class="detail-value">${user.google_id}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Arizalar soni:</span>
-                    <span class="detail-value">${user.app_count}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Xabarlar soni:</span>
-                    <span class="detail-value">${user.message_count}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Holat:</span>
-                    <span class="detail-value">${user.status}</span>
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Ro'yxatdan o'tgan:</span>
-                    <span class="detail-value">${user.created_at}</span>
-                </div>
-            `;
-        }
-        
-        function closeModal() {
-            document.getElementById('userModal').style.display = 'none';
-        }
-        
-        // Close modal on outside click
-        document.getElementById('userModal').addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeModal();
-            }
-        });
-    </script>
-</body>
-</html>
+<div class="admin-layout">
+<aside class="sidebar"><a href="dashboard.php" class="logo"><span class="logo-mark">S</span><span>SOON Admin</span></a><nav class="nav-menu">
+<a href="dashboard.php" class="nav-link">📊 Boshqaruv</a><a href="services.php" class="nav-link">🛠 Xizmatlar</a><a href="portfolio.php" class="nav-link">📁 Portfolio</a><a href="blog.php" class="nav-link">📝 Blog</a><a href="applications.php" class="nav-link">📋 Arizalar</a><a href="users.php" class="nav-link active">👥 Foydalanuvchilar</a><a href="chat.php" class="nav-link">💬 Chat</a><a href="settings.php" class="nav-link">⚙️ Sozlamalar</a><span class="nav-divider"></span><a href="../index.php" target="_blank" rel="noopener" class="nav-link">🌐 Saytni ko‘rish</a><a href="logout.php" class="nav-link" style="color:var(--error)">🚪 Chiqish</a>
+</nav></aside>
+<main class="main-content">
+<div class="header"><div><div class="eyebrow">SOON boshqaruv paneli</div><h1>Foydalanuvchilar</h1><p>Ro‘yxatdan o‘tgan foydalanuvchilar va ularning faolligini boshqaring.</p></div><div class="header-actions"><button type="button" data-theme-toggle class="btn-secondary">🌓 Mavzu</button></div></div>
+<?php if ($message): ?><div class="alert alert-<?php echo e($messageType); ?>"><?php echo e($message); ?></div><?php endif; ?>
+<div class="stats"><div class="stat"><div class="stat-label">Jami foydalanuvchilar</div><div class="stat-value"><?php echo number_format($totalUsers); ?></div></div><div class="stat"><div class="stat-label">Faol foydalanuvchilar</div><div class="stat-value"><?php echo number_format($activeUsers); ?></div></div><div class="stat"><div class="stat-label">Bloklanganlar</div><div class="stat-value"><?php echo number_format($blockedUsers); ?></div></div></div>
+<section class="card"><div class="toolbar"><div><h2>Barcha foydalanuvchilar</h2><div class="muted" style="font-size:.82rem;margin-top:4px"><?php echo number_format($totalUsers); ?> ta foydalanuvchi</div></div></div>
+<?php if (!$users): ?><div class="empty"><div style="font-size:2.5rem;margin-bottom:10px">👥</div><div style="font-weight:700;color:var(--text-primary);margin-bottom:5px">Foydalanuvchilar hozircha yo‘q</div><div>Yangi foydalanuvchilar shu yerda ko‘rinadi.</div></div>
+<?php else: ?><div class="table-wrap"><table><thead><tr><th>Foydalanuvchi</th><th>Telefon</th><th>Arizalar</th><th>Chatlar</th><th>Xabarlar</th><th>Holat</th><th>Sana</th><th></th></tr></thead><tbody>
+<?php foreach ($users as $user): ?><?php $initial = function_exists('mb_substr') ? mb_substr($user['full_name'] ?? 'F', 0, 1) : substr($user['full_name'] ?? 'F', 0, 1); $status = $user['status'] ?? 'active'; ?>
+<tr><td><div class="user-cell"><div class="avatar"><?php if (!empty($user['avatar_url'])): ?><img src="<?php echo e($user['avatar_url']); ?>" alt="<?php echo e($user['full_name']); ?>"><?php else: ?><?php echo e(function_exists('mb_strtoupper') ? mb_strtoupper($initial) : strtoupper($initial)); ?><?php endif; ?></div><div><div class="user-name"><?php echo e($user['full_name']); ?></div><div class="user-email"><?php echo e($user['email']); ?></div></div></div></td><td><?php echo e($user['phone'] ?: '—'); ?></td><td><?php echo number_format((int)$user['app_count']); ?></td><td><?php echo number_format((int)$user['thread_count']); ?></td><td><?php echo number_format((int)$user['message_count']); ?></td><td><span class="status status-<?php echo e($status); ?>"><span class="status-dot"></span><?php echo e($statusLabels[$status] ?? $status); ?></span></td><td class="muted"><?php echo !empty($user['created_at']) ? e(date('d.m.Y', strtotime($user['created_at']))) : '—'; ?></td><td><button type="button" class="btn-mini" onclick="openUserModal(<?php echo htmlspecialchars(json_encode($user, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8'); ?>)">Ko‘rish</button></td></tr>
+<?php endforeach; ?></tbody></table></div>
+<?php if (($pagination['total_pages'] ?? 1) > 1): ?><div class="pagination"><?php if (!empty($pagination['has_prev'])): ?><a class="page-btn" href="?page=<?php echo $page - 1; ?>">‹</a><?php endif; ?><?php for ($i = 1; $i <= $pagination['total_pages']; $i++): ?><a class="page-btn <?php echo $i === $page ? 'active' : ''; ?>" href="?page=<?php echo $i; ?>"><?php echo $i; ?></a><?php endfor; ?><?php if (!empty($pagination['has_next'])): ?><a class="page-btn" href="?page=<?php echo $page + 1; ?>">›</a><?php endif; ?></div><?php endif; ?><?php endif; ?>
+</section></main></div>
+<div id="userModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal"><div class="modal-head"><h3 id="modalTitle">Foydalanuvchi ma’lumotlari</h3><button type="button" class="close" onclick="closeUserModal()" aria-label="Yopish">×</button></div><div id="modalContent"></div><form method="POST" class="modal-form"><input type="hidden" name="csrf_token" value="<?php echo e($csrf); ?>"><input type="hidden" name="action" value="update_status"><input type="hidden" name="id" id="modalUserId"><label class="form-label" for="modalUserStatus">Foydalanuvchi holati</label><select name="status" id="modalUserStatus" class="form-select"><option value="active">Faol</option><option value="blocked">Bloklangan</option><option value="deleted">O‘chirilgan</option></select><div class="form-actions"><button type="button" class="btn-secondary" onclick="closeUserModal()">Bekor qilish</button><button type="submit" class="btn-primary">Saqlash</button></div></form></div></div>
+<script src="../assets/js/main.js"></script><script>
+const userModal=document.getElementById('userModal');const modalContent=document.getElementById('modalContent');const modalUserId=document.getElementById('modalUserId');const modalUserStatus=document.getElementById('modalUserStatus');
+function escapeHtml(value){return String(value??'').replace(/[&<>'"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c];});}
+function detail(label,value){return '<div class="detail"><span class="detail-label">'+escapeHtml(label)+'</span><span class="detail-value">'+escapeHtml(value||'—')+'</span></div>';}
+function openUserModal(user){modalUserId.value=user.id||'';modalUserStatus.value=user.status||'active';modalContent.innerHTML='<div class="detail-grid">'+detail('Ism',user.full_name)+detail('Email',user.email)+detail('Telefon',user.phone)+detail('Holat',user.status)+detail('Email tasdiqlangan',Number(user.email_verified)===1?'Ha':'Yo‘q')+detail('Ro‘yxatdan o‘tgan',user.created_at?user.created_at:'—')+detail('Oxirgi kirish',user.last_login_at?user.last_login_at:'—')+detail('Arizalar',user.app_count)+detail('Chatlar',user.thread_count)+detail('Xabarlar',user.message_count)+'</div>';userModal.style.display='flex';document.body.style.overflow='hidden';}
+function closeUserModal(){userModal.style.display='none';document.body.style.overflow='';}
+userModal.addEventListener('click',function(event){if(event.target===userModal)closeUserModal();});document.addEventListener('keydown',function(event){if(event.key==='Escape'&&userModal.style.display==='flex')closeUserModal();});
+</script></body></html>
