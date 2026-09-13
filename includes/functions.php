@@ -79,6 +79,34 @@ function requireAdmin() {
     if (!isAdminLoggedIn()) redirect(SITE_URL . '/admin/login.php');
 }
 
+function getAdminPermissions($admin = null) {
+    $admin = $admin ?: getCurrentAdmin();
+    if (!$admin) return [];
+    $role = $admin['role'] ?? '';
+    if ($role === 'super_admin') return ['*'];
+    try {
+        $rows = dbFetchAll('SELECT p.permission_key FROM admin_role_permissions rp INNER JOIN admin_permissions p ON p.id = rp.permission_id WHERE rp.role = :role', ['role' => $role]);
+        return array_values(array_unique(array_column($rows, 'permission_key')));
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+function adminHasPermission($permission, $admin = null) {
+    $permissions = getAdminPermissions($admin);
+    return in_array('*', $permissions, true) || in_array($permission, $permissions, true);
+}
+
+function requireAdminPermission($permission) {
+    requireAdmin();
+    if (!adminHasPermission($permission)) {
+        http_response_code(403);
+        header('Content-Type: text/html; charset=UTF-8');
+        echo '<!doctype html><html lang="uz"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>403 — SOON</title><style>body{font-family:system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#f6f7fb;color:#111827}.box{max-width:520px;padding:40px;text-align:center;background:#fff;border:1px solid #e5e7eb;border-radius:24px;box-shadow:0 20px 60px #0001}a{display:inline-block;margin-top:20px;padding:11px 18px;border-radius:12px;background:#111827;color:#fff;text-decoration:none}</style></head><body><main class="box"><div style="font-size:52px;font-weight:800">403</div><h1>Ruxsat yo‘q</h1><p>Bu amal uchun sizning administrator rolingizda yetarli huquq mavjud emas.</p><a href="dashboard.php">Dashboardga qaytish</a></main></body></html>';
+        exit;
+    }
+}
+
 function getCurrentUser() {
     startSecureSession();
     if (empty($_SESSION['user_id'])) return null;
