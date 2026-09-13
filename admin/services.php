@@ -2,13 +2,18 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../includes/functions.php';
-requireAdmin();
+requireAdminPermission('services.view');
 
 $admin = getCurrentAdmin();
 $message = '';
 $error = '';
+$canManage = adminHasPermission('services.manage', $admin);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!$canManage) {
+        http_response_code(403);
+        exit('403 Forbidden');
+    }
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
         $error = 'Xavfsizlik tokeni noto\'g\'ri.';
     } else {
@@ -27,13 +32,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $descRu = trim((string)($_POST['description_ru'] ?? ''));
                 $descEn = trim((string)($_POST['description_en'] ?? ''));
                 if ($titleUz === '' || $descUz === '') throw new InvalidArgumentException('O\'zbekcha nom va tavsif majburiy.');
+                $priceFrom = ($_POST['price_from'] ?? '') !== '' ? max(0, (float)$_POST['price_from']) : null;
+                $priceTo = ($_POST['price_to'] ?? '') !== '' ? max(0, (float)$_POST['price_to']) : null;
+                if ($priceFrom !== null && $priceTo !== null && $priceTo < $priceFrom) throw new InvalidArgumentException('Yuqori narx pastki narxdan kichik bo\'lmasligi kerak.');
                 $status = in_array($_POST['status'] ?? 'active', ['active', 'inactive'], true) ? $_POST['status'] : 'active';
                 $data = [
                     'title_uz' => $titleUz, 'title_ru' => $titleRu ?: null, 'title_en' => $titleEn ?: null,
                     'description_uz' => $descUz, 'description_ru' => $descRu ?: null, 'description_en' => $descEn ?: null,
                     'icon' => trim((string)($_POST['icon'] ?? 'code')) ?: 'code',
-                    'price_from' => ($_POST['price_from'] ?? '') !== '' ? max(0, (float)$_POST['price_from']) : null,
-                    'price_to' => ($_POST['price_to'] ?? '') !== '' ? max(0, (float)$_POST['price_to']) : null,
+                    'price_from' => $priceFrom, 'price_to' => $priceTo,
                     'duration_days' => ($_POST['duration_days'] ?? '') !== '' ? max(0, (int)$_POST['duration_days']) : null,
                     'is_popular' => isset($_POST['is_popular']) ? 1 : 0,
                     'sort_order' => (int)($_POST['sort_order'] ?? 0), 'status' => $status
@@ -70,7 +77,7 @@ body{background:var(--bg-secondary)}.wrap{max-width:1200px;margin:auto;padding:3
 <div class="top"><div><div class="muted">SOON Admin</div><h1 style="margin:.2rem 0">Xizmatlar</h1></div><a class="btn" href="dashboard.php">← Dashboard</a></div>
 <?php if($message): ?><div class="alert ok"><?php echo e($message); ?></div><?php endif; ?>
 <?php if($error): ?><div class="alert bad"><?php echo e($error); ?></div><?php endif; ?>
-<div class="card"><h2><?php echo $editing ? 'Xizmatni tahrirlash' : 'Yangi xizmat'; ?></h2>
+<?php if($canManage): ?><div class="card"><h2><?php echo $editing ? 'Xizmatni tahrirlash' : 'Yangi xizmat'; ?></h2>
 <form method="post"><input type="hidden" name="csrf_token" value="<?php echo e(generateCsrfToken()); ?>"><input type="hidden" name="action" value="<?php echo $editing ? 'update' : 'create'; ?>"><input type="hidden" name="id" value="<?php echo (int)($editing['id'] ?? 0); ?>">
 <div class="grid">
 <div><label>Nomi (UZ) *</label><input required name="title_uz" value="<?php echo field($editing ?? [],'title_uz'); ?>"></div>
@@ -86,7 +93,7 @@ body{background:var(--bg-secondary)}.wrap{max-width:1200px;margin:auto;padding:3
 <div><label>Tartib</label><input type="number" name="sort_order" value="<?php echo field($editing ?? [],'sort_order','0'); ?>"></div>
 <div><label>Status</label><select name="status"><option value="active" <?php echo (($editing['status'] ?? 'active')==='active')?'selected':''; ?>>Faol</option><option value="inactive" <?php echo (($editing['status'] ?? '')==='inactive')?'selected':''; ?>>Nofaol</option></select></div>
 <div><label><input style="width:auto" type="checkbox" name="is_popular" <?php echo !empty($editing['is_popular'])?'checked':''; ?>> Mashhur xizmat</label></div>
-</div><div class="actions"><button class="btn primary" type="submit"><?php echo $editing?'Saqlash':'Qo\'shish'; ?></button><?php if($editing): ?><a class="btn" href="services.php">Bekor qilish</a><?php endif; ?></div></form></div>
-<div class="card"><h2>Mavjud xizmatlar</h2><div class="scroll"><table class="table"><thead><tr><th>#</th><th>Nomi</th><th>Narx</th><th>Status</th><th>Amal</th></tr></thead><tbody>
-<?php foreach($services as $s): ?><tr><td><?php echo (int)$s['id']; ?></td><td><strong><?php echo e($s['title_uz']); ?></strong><div class="muted"><?php echo e(mb_substr($s['description_uz'] ?? '',0,90)); ?></div></td><td><?php echo $s['price_from'] !== null ? number_format((float)$s['price_from'],0,',',' ').' so\'m' : 'Kelishiladi'; ?></td><td><?php echo e($s['status']); ?></td><td><div class="actions"><a class="btn" href="?edit=<?php echo (int)$s['id']; ?>">Tahrirlash</a><form method="post" onsubmit="return confirm('O\'chirishni tasdiqlaysizmi?')"><input type="hidden" name="csrf_token" value="<?php echo e(generateCsrfToken()); ?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?php echo (int)$s['id']; ?>"><button class="btn danger" type="submit">O\'chirish</button></form></div></td></tr><?php endforeach; ?>
+</div><div class="actions"><button class="btn primary" type="submit"><?php echo $editing?'Saqlash':'Qo\'shish'; ?></button><?php if($editing): ?><a class="btn" href="services.php">Bekor qilish</a><?php endif; ?></div></form></div><?php endif; ?>
+<div class="card"><h2>Mavjud xizmatlar</h2><div class="scroll"><table class="table"><thead><tr><th>#</th><th>Nomi</th><th>Narx</th><th>Status</th><?php if($canManage): ?><th>Amal</th><?php endif; ?></tr></thead><tbody>
+<?php foreach($services as $s): ?><tr><td><?php echo (int)$s['id']; ?></td><td><strong><?php echo e($s['title_uz']); ?></strong><div class="muted"><?php echo e(mb_substr($s['description_uz'] ?? '',0,90)); ?></div></td><td><?php echo $s['price_from'] !== null ? number_format((float)$s['price_from'],0,',',' ').' so\'m' : 'Kelishiladi'; ?></td><td><?php echo e($s['status']); ?></td><?php if($canManage): ?><td><div class="actions"><a class="btn" href="?edit=<?php echo (int)$s['id']; ?>">Tahrirlash</a><form method="post" onsubmit="return confirm('O\'chirishni tasdiqlaysizmi?')"><input type="hidden" name="csrf_token" value="<?php echo e(generateCsrfToken()); ?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?php echo (int)$s['id']; ?>"><button class="btn danger" type="submit">O\'chirish</button></form></div></td><?php endif; ?></tr><?php endforeach; ?>
 <?php if(!$services): ?><tr><td colspan="5" class="muted">Hozircha xizmatlar yo\'q.</td></tr><?php endif; ?></tbody></table></div></div></main></body></html>
