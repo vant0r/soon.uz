@@ -1,143 +1,70 @@
 <?php
-/**
- * User Profile Page - /user/profile.php
- * View and edit user profile
- */
-
-require_once __DIR__ . '/../includes/config.php';
-require_once __DIR__ . '/../includes/database.php';
-require_once __DIR__ . '/../includes/security.php';
 require_once __DIR__ . '/../includes/functions.php';
+requireUser();
 
-// Require authentication
-if (!isLoggedIn()) {
-    header('Location: login.php');
-    exit;
-}
+$userId = (int) $_SESSION['user_id'];
+$user = dbFetchOne('SELECT * FROM users WHERE id = :id', ['id' => $userId]);
 
-$userId = (int)$_SESSION['user_id'];
-$user = dbFetchOne("SELECT * FROM users WHERE id = ?", [$userId]);
-
-if (!$user || $user['status'] === 'deleted') {
+if (!$user) {
     session_destroy();
-    header('Location: login.php');
-    exit;
+    redirect('login.php');
 }
 
-if ($user['status'] === 'blocked') {
-    $error = 'Sizning hisobingiz bloklangan. Ma\'lumot uchun admin bilan bog\'laning.';
-}
+$message = '';
+$messageType = '';
 
-// Handle profile update
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($error)) {
-    verifyCSRFToken($_POST['csrf_token'] ?? '');
-    
-    $errors = [];
-    $updateData = [];
-    
-    // Update name
-    if (isset($_POST['name'])) {
-        $name = trim($_POST['name']);
-        if (strlen($name) < 2) {
-            $errors['name'] = 'Ism juda qisqa (kamida 2 belgi).';
-        } else {
-            $updateData['name'] = $name;
-        }
-    }
-    
-    // Update phone
-    if (isset($_POST['phone'])) {
-        $phone = trim($_POST['phone']);
-        if ($phone !== '' && !preg_match('/^\+998\d{9}$/', $phone)) {
-            $errors['phone'] = 'Telefon raqam +998XXXXXXXXX formatida bo\'lishi kerak.';
-        } else {
-            $updateData['phone'] = $phone === '' ? null : $phone;
-        }
-    }
-    
-    if (empty($errors)) {
-        if (!empty($updateData)) {
-            dbUpdate('users', $updateData, 'id = ?', ['id' => $userId]);
-            $success = 'Profil muvaffaqiyatli yangilandi';
-            // Refresh user data
-            $user = dbFetchOne("SELECT * FROM users WHERE id = ?", [$userId]);
-        }
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
+        $message = 'Xavfsizlik tokeni noto‘g‘ri';
+        $messageType = 'error';
+    } elseif ($user['status'] !== 'active') {
+        $message = 'Hisobingiz faol emas';
+        $messageType = 'error';
     } else {
-        $error = implode('<br>', $errors);
+        $name = trim(sanitizeInput($_POST['name'] ?? ''));
+        $phone = trim(sanitizeInput($_POST['phone'] ?? ''));
+        $errors = [];
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 120) $errors[] = 'Ism 2–120 belgi oralig‘ida bo‘lishi kerak';
+        if ($phone !== '' && !preg_match('/^\+998\d{9}$/', $phone)) $errors[] = 'Telefon raqam +998XXXXXXXXX formatida bo‘lishi kerak';
+        if ($errors) {
+            $message = implode('. ', $errors);
+            $messageType = 'error';
+        } else {
+            dbUpdate('users', ['name' => $name, 'phone' => $phone !== '' ? $phone : null], 'id = :id', ['id' => $userId]);
+            $user = dbFetchOne('SELECT * FROM users WHERE id = :id', ['id' => $userId]);
+            $message = 'Profil muvaffaqiyatli yangilandi';
+            $messageType = 'success';
+        }
     }
 }
 
-$pageTitle = 'Mening Profilim';
+$csrf = generateCsrfToken();
 ?>
 <!DOCTYPE html>
-<html lang="uz" data-theme="light">
+<html lang="uz">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= e($pageTitle) ?> - WebHub.uz</title>
-    <link rel="stylesheet" href="../assets/css/main.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Profil — SOON</title>
+<link rel="stylesheet" href="../assets/css/main.css">
+<style>
+body{min-height:100vh;background:var(--bg-secondary)}.profile-wrap{max-width:720px;margin:0 auto;padding:40px 20px}.profile-card{padding:32px}.profile-head{display:flex;align-items:center;gap:16px;margin-bottom:28px}.avatar{width:72px;height:72px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:1.7rem;font-weight:700}.profile-head h1{margin:0}.profile-head p{margin:5px 0 0;color:var(--text-muted)}.form-group{margin-bottom:18px}.form-group label{display:block;margin-bottom:7px;font-weight:600}.form-input{width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--border-color);border-radius:12px;background:var(--bg-secondary);color:var(--text-primary)}.form-input:disabled{opacity:.7}.hint{display:block;margin-top:6px;font-size:.82rem;color:var(--text-muted)}.actions{display:flex;gap:10px;flex-wrap:wrap}.alert{padding:12px 16px;border-radius:12px;margin-bottom:20px}.alert-success{background:#D1FAE5;color:#047857}.alert-error{background:#FEE2E2;color:#B91C1C}@media(max-width:600px){.profile-wrap{padding:20px 12px}.profile-card{padding:22px}}
+</style>
 </head>
-<body class="user-page">
-    <?php include __DIR__ . '/includes/header.php'; ?>
-    
-    <main class="user-main">
-        <div class="container">
-            <div class="profile-card glass-card">
-                <h1><?= e($pageTitle) ?></h1>
-                
-                <?php if (isset($success)): ?>
-                    <div class="alert alert-success"><?= e($success) ?></div>
-                <?php endif; ?>
-                
-                <?php if (isset($error)): ?>
-                    <div class="alert alert-error"><?= e($error) ?></div>
-                <?php endif; ?>
-                
-                <form method="POST" class="profile-form">
-                    <?= csrfField() ?>
-                    
-                    <div class="form-group">
-                        <label for="google_id">Google ID</label>
-                        <input type="text" id="google_id" value="<?= e($user['google_id']) ?>" disabled>
-                        <small>Google orqali kirish</small>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="name">Ism</label>
-                        <input type="text" id="name" name="name" value="<?= e($user['name']) ?>" required minlength="2">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="email">Email</label>
-                        <input type="email" id="email" value="<?= e($user['email']) ?>" disabled>
-                        <small>Email Google hisobidan olinadi</small>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="phone">Telefon raqam</label>
-                        <input type="tel" id="phone" name="phone" value="<?= e($user['phone'] ?? '') ?>" placeholder="+998XXXXXXXXX">
-                        <small>Ixtiyoriy. Format: +998XXXXXXXXX</small>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Holat</label>
-                        <div class="status-badge status-<?= e($user['status']) ?>">
-                            <?= $user['status'] === 'active' ? 'Faol' : ($user['status'] === 'blocked' ? 'Bloklangan' : 'O\'chirilgan') ?>
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Ro\'yxatdan o\'tgan sana</label>
-                        <p><?= date('d.m.Y H:i', strtotime($user['created_at'])) ?></p>
-                    </div>
-                    
-                    <button type="submit" class="btn btn-primary">Saqlash</button>
-                </form>
-            </div>
-        </div>
-    </main>
-    
-    <?php include __DIR__ . '/includes/footer.php'; ?>
-    <script src="../assets/js/main.js"></script>
+<body>
+<?php include __DIR__ . '/includes/header.php'; ?>
+<main class="profile-wrap"><section class="glass-card profile-card">
+<div class="profile-head"><div class="avatar"><?php echo e(mb_strtoupper(mb_substr($user['name'] ?: 'S', 0, 1))); ?></div><div><h1>Mening profilim</h1><p><?php echo e($user['email']); ?></p></div></div>
+<?php if ($message): ?><div class="alert alert-<?php echo e($messageType); ?>"><?php echo e($message); ?></div><?php endif; ?>
+<form method="POST"><input type="hidden" name="csrf_token" value="<?php echo e($csrf); ?>">
+<div class="form-group"><label for="name">Ism</label><input class="form-input" id="name" name="name" value="<?php echo e($user['name']); ?>" maxlength="120" required></div>
+<div class="form-group"><label for="email">Email</label><input class="form-input" id="email" value="<?php echo e($user['email']); ?>" disabled><span class="hint">Emailni Google hisobingiz belgilaydi.</span></div>
+<div class="form-group"><label for="phone">Telefon raqam</label><input class="form-input" id="phone" name="phone" type="tel" value="<?php echo e($user['phone'] ?? ''); ?>" placeholder="+998XXXXXXXXX" maxlength="13"><span class="hint">Ixtiyoriy.</span></div>
+<div class="form-group"><label>Hisob holati</label><span class="status-badge"><?php echo $user['status'] === 'active' ? 'Faol' : ($user['status'] === 'blocked' ? 'Bloklangan' : 'O‘chirilgan'); ?></span></div>
+<div class="form-group"><label>Ro‘yxatdan o‘tgan sana</label><div><?php echo e(date('d.m.Y H:i', strtotime($user['created_at']))); ?></div></div>
+<div class="actions"><button type="submit" class="btn btn-primary">Saqlash</button><a href="dashboard.php" class="btn btn-secondary">Profilga qaytish</a></div>
+</form></section></main>
+<?php include __DIR__ . '/includes/footer.php'; ?>
+<script src="../assets/js/main.js"></script>
 </body>
 </html>
