@@ -1,257 +1,92 @@
 <?php
-/**
- * Admin - Services Management
- * Phase 4: Content Management
- */
+declare(strict_types=1);
 
-require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/../includes/functions.php';
 requireAdmin();
 
 $admin = getCurrentAdmin();
 $message = '';
 $error = '';
 
-// Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
-        $error = 'Xavfsizlik xatosi';
+        $error = 'Xavfsizlik tokeni noto\'g\'ri.';
     } else {
-        switch ($action) {
-            case 'create':
-            case 'update':
-                $title = sanitizeInput($_POST['title'] ?? '');
-                $description = sanitizeInput($_POST['description'] ?? '');
-                $price = (int) ($_POST['price'] ?? 0);
-                $sortOrder = (int) ($_POST['sort_order'] ?? 0);
-                $features = array_filter(array_map('trim', explode("\n", $_POST['features'] ?? '')));
-                $addonsRaw = array_filter(array_map('trim', explode("\n", $_POST['addons'] ?? '')));
-                
-                // Parse addons JSON format
-                $addons = [];
-                foreach ($addonsRaw as $addonLine) {
-                    $parts = explode(':', $addonLine, 2);
-                    if (count($parts) === 2) {
-                        $addons[] = [
-                            'name' => trim($parts[0]),
-                            'price' => (int) trim($parts[1])
-                        ];
-                    }
-                }
-                
-                $data = [
-                    'title' => $title,
-                    'description' => $description,
-                    'price' => $price,
-                    'features_json' => json_encode($features, JSON_UNESCAPED_UNICODE),
-                    'addons_json' => json_encode($addons, JSON_UNESCAPED_UNICODE),
-                    'sort_order' => $sortOrder
-                ];
-                
-                if ($action === 'create') {
-                    $data['created_at'] = date('Y-m-d H:i:s');
-                    $id = dbInsert('services', $data);
-                    logAdminAction($admin['id'], 'Create service', 'service', $id);
-                    $message = 'Xizmat muvaffaqiyatli qo\'shildi';
-                } else {
-                    $id = (int) $_POST['id'];
-                    dbUpdate('services', $data, 'id = :id', ['id' => $id]);
-                    logAdminAction($admin['id'], 'Update service', 'service', $id);
-                    $message = 'Xizmat muvaffaqiyatli yangilandi';
-                }
-                break;
-                
-            case 'delete':
-                $id = (int) $_POST['id'];
+        $action = $_POST['action'] ?? '';
+        $id = (int)($_POST['id'] ?? 0);
+        try {
+            if ($action === 'delete' && $id > 0) {
                 dbDelete('services', 'id = :id', ['id' => $id]);
-                logAdminAction($admin['id'], 'Delete service', 'service', $id);
-                $message = 'Xizmat o\'chirildi';
-                break;
+                logAdminAction((int)$admin['id'], 'delete_service', 'services', $id);
+                $message = 'Xizmat o\'chirildi.';
+            } elseif (in_array($action, ['create', 'update'], true)) {
+                $titleUz = trim((string)($_POST['title_uz'] ?? ''));
+                $titleRu = trim((string)($_POST['title_ru'] ?? ''));
+                $titleEn = trim((string)($_POST['title_en'] ?? ''));
+                $descUz = trim((string)($_POST['description_uz'] ?? ''));
+                $descRu = trim((string)($_POST['description_ru'] ?? ''));
+                $descEn = trim((string)($_POST['description_en'] ?? ''));
+                if ($titleUz === '' || $descUz === '') throw new InvalidArgumentException('O\'zbekcha nom va tavsif majburiy.');
+                $status = in_array($_POST['status'] ?? 'active', ['active', 'inactive'], true) ? $_POST['status'] : 'active';
+                $data = [
+                    'title_uz' => $titleUz, 'title_ru' => $titleRu ?: null, 'title_en' => $titleEn ?: null,
+                    'description_uz' => $descUz, 'description_ru' => $descRu ?: null, 'description_en' => $descEn ?: null,
+                    'icon' => trim((string)($_POST['icon'] ?? 'code')) ?: 'code',
+                    'price_from' => ($_POST['price_from'] ?? '') !== '' ? max(0, (float)$_POST['price_from']) : null,
+                    'price_to' => ($_POST['price_to'] ?? '') !== '' ? max(0, (float)$_POST['price_to']) : null,
+                    'duration_days' => ($_POST['duration_days'] ?? '') !== '' ? max(0, (int)$_POST['duration_days']) : null,
+                    'is_popular' => isset($_POST['is_popular']) ? 1 : 0,
+                    'sort_order' => (int)($_POST['sort_order'] ?? 0), 'status' => $status
+                ];
+                if ($action === 'create') {
+                    $id = dbInsert('services', $data);
+                    logAdminAction((int)$admin['id'], 'create_service', 'services', $id);
+                    $message = 'Xizmat qo\'shildi.';
+                } else {
+                    if ($id <= 0) throw new InvalidArgumentException('Xizmat ID noto\'g\'ri.');
+                    dbUpdate('services', $data, 'id = :id', ['id' => $id]);
+                    logAdminAction((int)$admin['id'], 'update_service', 'services', $id);
+                    $message = 'Xizmat yangilandi.';
+                }
+            }
+        } catch (Throwable $e) {
+            $error = $e instanceof InvalidArgumentException ? $e->getMessage() : 'Amalni bajarishda xatolik yuz berdi.';
         }
     }
 }
 
-// Fetch services
-$services = dbFetchAll("SELECT * FROM services ORDER BY sort_order, id");
-
-// Get service for editing
-$editingService = null;
-if (isset($_GET['edit'])) {
-    $editingService = dbFetchOne("SELECT * FROM services WHERE id = :id", ['id' => (int) $_GET['edit']]);
-}
+$services = dbFetchAll("SELECT * FROM services ORDER BY sort_order ASC, id ASC");
+$editing = null;
+if (isset($_GET['edit'])) $editing = dbFetchOne('SELECT * FROM services WHERE id = :id', ['id' => (int)$_GET['edit']]);
+function field(array $row, string $key, string $default = ''): string { return e((string)($row[$key] ?? $default)); }
 ?>
-<!DOCTYPE html>
-<html lang="uz">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Xizmatlar - WebHub Admin</title>
-    <link rel="stylesheet" href="../assets/css/main.css">
-    <style>
-        body { background: var(--bg-secondary); }
-        .admin-layout { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
-        @media (max-width: 1024px) { .admin-layout { grid-template-columns: 1fr; } }
-        .sidebar { background: var(--bg-primary); border-right: 1px solid var(--border-color); padding: 24px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
-        .logo { font-size: 1.5rem; font-weight: 700; color: var(--primary); margin-bottom: 32px; display: block; text-decoration: none; }
-        .nav-menu { display: flex; flex-direction: column; gap: 8px; }
-        .nav-link { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 12px; color: var(--text-secondary); text-decoration: none; }
-        .nav-link:hover, .nav-link.active { background: var(--bg-tertiary); color: var(--text-primary); }
-        .nav-link.active { background: rgba(59, 130, 246, 0.1); color: var(--primary); }
-        .main-content { padding: 32px; }
-        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; flex-wrap: wrap; gap: 16px; }
-        .card { background: var(--bg-primary); border-radius: 16px; padding: 24px; margin-bottom: 24px; }
-        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px; font-size: 16px; border: none; border-radius: 12px; cursor: pointer; text-decoration: none; min-height: 44px; }
-        .btn-primary { background: var(--primary); color: white; }
-        .btn-secondary { background: transparent; color: var(--text-primary); border: 1px solid var(--border-color); }
-        .btn-sm { padding: 8px 16px; font-size: 14px; }
-        .table-responsive { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border-color); }
-        th { color: var(--text-muted); font-weight: 500; font-size: 0.85rem; }
-        tr:hover { background: var(--bg-secondary); }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-secondary); }
-        input[type="text"], input[type="number"], textarea, select { width: 100%; padding: 12px 16px; font-size: 16px; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 12px; }
-        textarea { resize: vertical; min-height: 100px; }
-        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; }
-        .alert-success { background: #D1FAE5; border: 1px solid #6EE7B7; color: #059669; }
-        .alert-error { background: #FEE2E2; border: 1px solid #FCA5A5; color: #DC2626; }
-        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
-        .modal-overlay.active { display: flex; }
-        .modal { background: var(--bg-primary); border-radius: 16px; padding: 32px; max-width: 600px; width: 90%; max-height: 90vh; overflow-y: auto; }
-    </style>
-</head>
-<body>
-    <div class="admin-layout">
-        <aside class="sidebar">
-            <a href="dashboard.php" class="logo">WebHub Admin</a>
-            <nav class="nav-menu">
-                <a href="dashboard.php" class="nav-link">📊 Dashboard</a>
-                <a href="services.php" class="nav-link active">🛠 Xizmatlar</a>
-                <a href="portfolio.php" class="nav-link">📁 Portfolio</a>
-                <a href="blog.php" class="nav-link">📝 Blog</a>
-                <a href="applications.php" class="nav-link">📋 Arizalar</a>
-                <a href="users.php" class="nav-link">👥 Foydalanuvchilar</a>
-                <a href="chat.php" class="nav-link">💬 Chat</a>
-                <a href="settings.php" class="nav-link">⚙ Sozlamalar</a>
-                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 8px 0;">
-                <a href="../index.php" target="_blank" class="nav-link">🌐 Saytni ko'rish</a>
-                <a href="logout.php" class="nav-link" style="color: var(--error);">🚪 Chiqish</a>
-            </nav>
-        </aside>
-        
-        <main class="main-content">
-            <div class="header">
-                <h1>Xizmatlar</h1>
-                <button class="btn btn-primary" onclick="openModal()">+ Yangi xizmat</button>
-            </div>
-            
-            <?php if ($message): ?>
-            <div class="alert alert-success"><?php echo e($message); ?></div>
-            <?php endif; ?>
-            <?php if ($error): ?>
-            <div class="alert alert-error"><?php echo e($error); ?></div>
-            <?php endif; ?>
-            
-            <div class="card">
-                <div class="table-responsive">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Nomi</th>
-                                <th>Narx</th>
-                                <th>Tartib</th>
-                                <th>Amallar</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($services as $service): ?>
-                            <tr>
-                                <td>
-                                    <strong><?php echo e($service['title']); ?></strong><br>
-                                    <small style="color: var(--text-muted);"><?php echo e(mb_substr($service['description'] ?? '', 0, 50)); ?>...</small>
-                                </td>
-                                <td><?php echo number_format($service['price'], 0, ',', ' '); ?> so'm</td>
-                                <td><?php echo $service['sort_order']; ?></td>
-                                <td>
-                                    <a href="?edit=<?php echo $service['id']; ?>" class="btn btn-secondary btn-sm">Tahrirlash</a>
-                                    <form method="POST" style="display: inline;" onsubmit="return confirm('O\'chirishni tasdiqlaysizmi?')">
-                                        <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
-                                        <input type="hidden" name="action" value="delete">
-                                        <input type="hidden" name="id" value="<?php echo $service['id']; ?>">
-                                        <button type="submit" class="btn btn-secondary btn-sm" style="color: var(--error);">O'chirish</button>
-                                    </form>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </main>
-    </div>
-    
-    <!-- Modal -->
-    <div class="modal-overlay" id="serviceModal">
-        <div class="modal">
-            <h2 style="margin-bottom: 24px;"><?php echo $editingService ? 'Xizmatni tahrirlash' : 'Yangi xizmat'; ?></h2>
-            <form method="POST">
-                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
-                <input type="hidden" name="action" value="<?php echo $editingService ? 'update' : 'create'; ?>">
-                <?php if ($editingService): ?>
-                <input type="hidden" name="id" value="<?php echo $editingService['id']; ?>">
-                <?php endif; ?>
-                
-                <div class="form-group">
-                    <label>Nomi</label>
-                    <input type="text" name="title" required value="<?php echo e($editingService['title'] ?? ''); ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label>Tavsif</label>
-                    <textarea name="description" rows="3"><?php echo e($editingService['description'] ?? ''); ?></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label>Narx (so'm)</label>
-                    <input type="number" name="price" value="<?php echo $editingService['price'] ?? 0; ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label>Tartib raqami</label>
-                    <input type="number" name="sort_order" value="<?php echo $editingService['sort_order'] ?? 0; ?>">
-                </div>
-                
-                <div class="form-group">
-                    <label>Nimalar kiradi (har bir qator alohida)</label>
-                    <textarea name="features" rows="4" placeholder="Veb-sayt yaratish&#10;Dizayn ishlash&#10;SEO optimizatsiya"><?php echo $editingService && $editingService['features_json'] ? implode("\n", json_decode($editingService['features_json'], true)) : ''; ?></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label>Qo'shimcha xizmatlar (format: Nomi: Narx)</label>
-                    <textarea name="addons" rows="4" placeholder="Logo dizayn: 500000&#10;SEO paket: 1000000"><?php 
-                        if ($editingService && $editingService['addons_json']) {
-                            $addons = json_decode($editingService['addons_json'], true);
-                            foreach ($addons as $addon) {
-                                echo $addon['name'] . ': ' . $addon['price'] . "\n";
-                            }
-                        }
-                    ?></textarea>
-                </div>
-                
-                <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;">
-                    <a href="services.php" class="btn btn-secondary">Bekor qilish</a>
-                    <button type="submit" class="btn btn-primary">Saqlash</button>
-                </div>
-            </form>
-        </div>
-    </div>
-    
-    <script>
-        function openModal() { document.getElementById('serviceModal').classList.add('active'); }
-        <?php if ($editingService): ?>openModal();<?php endif; ?>
-    </script>
-</body>
-</html>
+<!doctype html>
+<html lang="uz"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Xizmatlar — SOON Admin</title><link rel="stylesheet" href="../assets/css/main.css">
+<style>
+body{background:var(--bg-secondary)}.wrap{max-width:1200px;margin:auto;padding:32px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}.card{background:var(--bg-primary);border:1px solid var(--border-color);border-radius:18px;padding:24px;margin-top:24px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.full{grid-column:1/-1}label{display:block;margin-bottom:7px;font-weight:600}input,textarea,select{width:100%;box-sizing:border-box;padding:11px 13px;border:1px solid var(--border-color);border-radius:11px;background:var(--bg-secondary);color:var(--text-primary)}textarea{min-height:100px;resize:vertical}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.btn{display:inline-flex;align-items:center;justify-content:center;padding:10px 15px;border-radius:11px;border:1px solid var(--border-color);text-decoration:none;cursor:pointer;background:var(--bg-primary);color:var(--text-primary)}.primary{background:var(--primary);color:#fff;border-color:var(--primary)}.danger{color:#b91c1c}.alert{padding:12px 15px;border-radius:11px;margin-top:18px}.ok{background:#dcfce7;color:#166534}.bad{background:#fee2e2;color:#991b1b}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:13px 10px;text-align:left;border-bottom:1px solid var(--border-color)}.muted{color:var(--text-muted)}@media(max-width:800px){.grid{grid-template-columns:1fr}.full{grid-column:auto}.wrap{padding:18px}.table{min-width:760px}.scroll{overflow:auto}}
+</style></head><body><main class="wrap">
+<div class="top"><div><div class="muted">SOON Admin</div><h1 style="margin:.2rem 0">Xizmatlar</h1></div><a class="btn" href="dashboard.php">← Dashboard</a></div>
+<?php if($message): ?><div class="alert ok"><?php echo e($message); ?></div><?php endif; ?>
+<?php if($error): ?><div class="alert bad"><?php echo e($error); ?></div><?php endif; ?>
+<div class="card"><h2><?php echo $editing ? 'Xizmatni tahrirlash' : 'Yangi xizmat'; ?></h2>
+<form method="post"><input type="hidden" name="csrf_token" value="<?php echo e(generateCsrfToken()); ?>"><input type="hidden" name="action" value="<?php echo $editing ? 'update' : 'create'; ?>"><input type="hidden" name="id" value="<?php echo (int)($editing['id'] ?? 0); ?>">
+<div class="grid">
+<div><label>Nomi (UZ) *</label><input required name="title_uz" value="<?php echo field($editing ?? [],'title_uz'); ?>"></div>
+<div><label>Nomi (RU)</label><input name="title_ru" value="<?php echo field($editing ?? [],'title_ru'); ?>"></div>
+<div><label>Nomi (EN)</label><input name="title_en" value="<?php echo field($editing ?? [],'title_en'); ?>"></div>
+<div class="full"><label>Tavsif (UZ) *</label><textarea required name="description_uz"><?php echo field($editing ?? [],'description_uz'); ?></textarea></div>
+<div><label>Tavsif (RU)</label><textarea name="description_ru"><?php echo field($editing ?? [],'description_ru'); ?></textarea></div>
+<div><label>Tavsif (EN)</label><textarea name="description_en"><?php echo field($editing ?? [],'description_en'); ?></textarea></div>
+<div><label>Icon</label><input name="icon" value="<?php echo field($editing ?? [],'icon','code'); ?>"></div>
+<div><label>Narxdan</label><input type="number" min="0" step="0.01" name="price_from" value="<?php echo field($editing ?? [],'price_from'); ?>"></div>
+<div><label>Narxgacha</label><input type="number" min="0" step="0.01" name="price_to" value="<?php echo field($editing ?? [],'price_to'); ?>"></div>
+<div><label>Muddat (kun)</label><input type="number" min="0" name="duration_days" value="<?php echo field($editing ?? [],'duration_days'); ?>"></div>
+<div><label>Tartib</label><input type="number" name="sort_order" value="<?php echo field($editing ?? [],'sort_order','0'); ?>"></div>
+<div><label>Status</label><select name="status"><option value="active" <?php echo (($editing['status'] ?? 'active')==='active')?'selected':''; ?>>Faol</option><option value="inactive" <?php echo (($editing['status'] ?? '')==='inactive')?'selected':''; ?>>Nofaol</option></select></div>
+<div><label><input style="width:auto" type="checkbox" name="is_popular" <?php echo !empty($editing['is_popular'])?'checked':''; ?>> Mashhur xizmat</label></div>
+</div><div class="actions"><button class="btn primary" type="submit"><?php echo $editing?'Saqlash':'Qo\'shish'; ?></button><?php if($editing): ?><a class="btn" href="services.php">Bekor qilish</a><?php endif; ?></div></form></div>
+<div class="card"><h2>Mavjud xizmatlar</h2><div class="scroll"><table class="table"><thead><tr><th>#</th><th>Nomi</th><th>Narx</th><th>Status</th><th>Amal</th></tr></thead><tbody>
+<?php foreach($services as $s): ?><tr><td><?php echo (int)$s['id']; ?></td><td><strong><?php echo e($s['title_uz']); ?></strong><div class="muted"><?php echo e(mb_substr($s['description_uz'] ?? '',0,90)); ?></div></td><td><?php echo $s['price_from'] !== null ? number_format((float)$s['price_from'],0,',',' ').' so\'m' : 'Kelishiladi'; ?></td><td><?php echo e($s['status']); ?></td><td><div class="actions"><a class="btn" href="?edit=<?php echo (int)$s['id']; ?>">Tahrirlash</a><form method="post" onsubmit="return confirm('O\'chirishni tasdiqlaysizmi?')"><input type="hidden" name="csrf_token" value="<?php echo e(generateCsrfToken()); ?>"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?php echo (int)$s['id']; ?>"><button class="btn danger" type="submit">O\'chirish</button></form></div></td></tr><?php endforeach; ?>
+<?php if(!$services): ?><tr><td colspan="5" class="muted">Hozircha xizmatlar yo\'q.</td></tr><?php endif; ?></tbody></table></div></div></main></body></html>
