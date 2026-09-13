@@ -66,10 +66,14 @@ function validateApiToken($tokenHeader)
     $tokenHash = hash('sha256', $parts[1]);
     $sessionId = 'api_' . $tokenHash;
     $tokenData = dbFetchOne('SELECT user_id, last_activity FROM sessions WHERE id = :id AND user_type = :type LIMIT 1', ['id' => $sessionId, 'type' => 'user']);
-    if (!$tokenData || strtotime($tokenData['last_activity']) <= time()) {
-        if ($tokenData) dbDelete('sessions', 'id = :id', ['id' => $sessionId]);
+    if (!$tokenData) return false;
+    $lastActivity = strtotime($tokenData['last_activity']);
+    $lifetime = defined('SESSION_LIFETIME') ? max(60, (int) SESSION_LIFETIME) : 1800;
+    if ($lastActivity === false || $lastActivity < time() - $lifetime) {
+        dbDelete('sessions', 'id = :id', ['id' => $sessionId]);
         return false;
     }
+    dbQuery('UPDATE sessions SET last_activity = CURRENT_TIMESTAMP WHERE id = :id', ['id' => $sessionId]);
     return ['user_id' => (int) $tokenData['user_id']];
 }
 
