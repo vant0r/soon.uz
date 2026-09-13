@@ -1,0 +1,67 @@
+name: SOON Integration
+
+on:
+  push:
+    branches:
+      - enhancing-the-uzbek-interface-d6fc3
+  pull_request:
+    branches:
+      - enhancing-the-uzbek-interface-d6fc3
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: soon_uz_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql,mbstring,fileinfo,json
+          coverage: none
+      - name: Install schema
+        run: mysql --protocol=tcp -h 127.0.0.1 -uroot -proot soon_uz_test < database/schema.sql
+      - name: PHP syntax audit
+        shell: bash
+        run: |
+          set -e
+          while IFS= read -r file; do php -l "$file"; done < <(find . -type f -name '*.php' -not -path './vendor/*')
+      - name: Integration tests
+        env:
+          SOON_DB_HOST: 127.0.0.1
+          SOON_DB_NAME: soon_uz_test
+          SOON_DB_USER: root
+          SOON_DB_PASS: root
+        run: php tests/integration.php
+      - name: Start application
+        env:
+          DB_HOST: 127.0.0.1
+          DB_NAME: soon_uz_test
+          DB_USER: root
+          DB_PASS: root
+        run: |
+          cp includes/config.php.dist includes/config.php
+          sed -i "s/{{DB_HOST}}/127.0.0.1/g; s/{{DB_NAME}}/soon_uz_test/g; s/{{DB_USER}}/root/g; s/{{DB_PASS}}/root/g; s#{{SITE_URL}}#http://127.0.0.1:8080#g" includes/config.php
+          php -S 127.0.0.1:8080 -t . > /tmp/soon-php.log 2>&1 &
+          echo $! > /tmp/soon-php.pid
+          sleep 2
+      - name: HTTP smoke tests
+        env:
+          SOON_BASE_URL: http://127.0.0.1:8080
+          SOON_DB_HOST: 127.0.0.1
+          SOON_DB_NAME: soon_uz_test
+          SOON_DB_USER: root
+          SOON_DB_PASS: root
+        run: php tests/integration.php
