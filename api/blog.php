@@ -1,38 +1,59 @@
 <?php
-/**
- * GET /api/blog - List published blog posts (paginated)
- * Rate limit: 120 requests/minute per IP
- */
-
 require_once __DIR__ . '/config.php';
 
-// Rate limiting
 if (!checkRateLimit(120, 60)) {
     apiError('Juda ko\'p so\'rovlar. Iltimos biroz kuting.', 429);
 }
 
-$sql = "SELECT id, title, body, image, created_at 
-        FROM blog_posts 
-        WHERE status = 'published'
-        ORDER BY id DESC";
+$fields = [
+    'id',
+    'title_uz',
+    'title_ru',
+    'title_en',
+    'slug',
+    'excerpt_uz',
+    'excerpt_ru',
+    'excerpt_en',
+    'content_uz',
+    'content_ru',
+    'content_en',
+    'featured_image',
+    'category',
+    'tags',
+    'meta_title',
+    'meta_description',
+    'published_at',
+    'views_count',
+    'is_featured',
+    'sort_order',
+    'created_at',
+    'updated_at'
+];
 
-$countSql = "SELECT COUNT(*) as total FROM blog_posts WHERE status = 'published'";
-
+$sql = 'SELECT ' . implode(', ', $fields) . " FROM blog_posts WHERE status = 'published' ORDER BY is_featured DESC, sort_order ASC, published_at DESC, id DESC";
+$countSql = "SELECT COUNT(*) AS total FROM blog_posts WHERE status = 'published'";
 $result = getPaginatedResults($sql, [], $countSql);
 
-$baseUrl = 'https://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
+$baseUrl = rtrim(getSiteSetting('site_url', ''), '/');
+if ($baseUrl === '') {
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $baseUrl = $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
+}
+
+foreach ($result['data'] as &$post) {
+    $post['id'] = (int)$post['id'];
+    $post['views_count'] = (int)$post['views_count'];
+    $post['is_featured'] = (bool)$post['is_featured'];
+    $post['sort_order'] = (int)$post['sort_order'];
+    $post['tags'] = $post['tags'] ? (json_decode($post['tags'], true) ?: []) : [];
+    $post['featured_image_url'] = $post['featured_image'] ? $baseUrl . '/' . ltrim($post['featured_image'], '/') : null;
+    unset($post['featured_image']);
+}
+unset($post);
 
 apiResponse([
     'success' => true,
-    'data' => array_map(function($post) use ($baseUrl) {
-        return [
-            'id' => (int)$post['id'],
-            'title' => $post['title'],
-            'body' => $post['body'],
-            'image' => $post['image'] ? $baseUrl . '/' . $post['image'] : null,
-            'created_at' => $post['created_at']
-        ];
-    }, $result['data']),
+    'data' => $result['data'],
     'page' => $result['page'],
     'per_page' => $result['per_page'],
     'total' => $result['total']
