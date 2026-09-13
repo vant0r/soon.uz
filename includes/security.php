@@ -38,7 +38,7 @@ function isValidPhone($phone) {
         return false;
     }
     $cleaned = preg_replace('/[^\d+]/', '', $phone);
-    return (bool) preg_match('/^\+998\d{9}$/', $cleaned);
+    return (bool)preg_match('/^\+998\d{9}$/', $cleaned);
 }
 
 function formatPhone($phone) {
@@ -62,7 +62,7 @@ function isValidUrl($url) {
 
 /**
  * Return a trustworthy client IP.
- * X-Forwarded-For is only honored when the immediate peer is explicitly trusted.
+ * Forwarded headers are only honored when the immediate peer is trusted.
  */
 function getClientIp() {
     $remote = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
@@ -71,8 +71,7 @@ function getClientIp() {
     if (in_array($remote, $trustedProxies, true)) {
         $forwarded = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
         if ($forwarded !== '') {
-            $ips = array_map('trim', explode(',', $forwarded));
-            foreach ($ips as $ip) {
+            foreach (array_map('trim', explode(',', $forwarded)) as $ip) {
                 if (filter_var($ip, FILTER_VALIDATE_IP)) {
                     return $ip;
                 }
@@ -85,56 +84,6 @@ function getClientIp() {
     }
 
     return filter_var($remote, FILTER_VALIDATE_IP) ? $remote : '0.0.0.0';
-}
-
-/**
- * File-based rate limiting with a lock to avoid concurrent request races.
- */
-function checkRateLimit($identifier, $limit, $window = 60) {
-    $file = sys_get_temp_dir() . '/soon_ratelimit_' . hash('sha256', (string)$identifier);
-    $now = time();
-    $data = ['start' => $now, 'count' => 0];
-
-    $handle = @fopen($file, 'c+');
-    if (!$handle) {
-        return true;
-    }
-
-    try {
-        if (!flock($handle, LOCK_EX)) {
-            return true;
-        }
-
-        $contents = stream_get_contents($handle);
-        if ($contents !== false && $contents !== '') {
-            $decoded = json_decode($contents, true);
-            if (is_array($decoded)) {
-                $data = $decoded;
-            }
-        }
-
-        if (!isset($data['start'], $data['count']) || ($now - (int)$data['start']) >= $window) {
-            $data = ['start' => $now, 'count' => 1];
-        } elseif ((int)$data['count'] >= $limit) {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-            return false;
-        } else {
-            $data['count']++;
-        }
-
-        ftruncate($handle, 0);
-        rewind($handle);
-        fwrite($handle, json_encode($data, JSON_UNESCAPED_SLASHES));
-        fflush($handle);
-        flock($handle, LOCK_UN);
-        fclose($handle);
-        return true;
-    } catch (Throwable $e) {
-        @flock($handle, LOCK_UN);
-        @fclose($handle);
-        return true;
-    }
 }
 
 function checkBruteForceLockout($ip) {
