@@ -1,9 +1,4 @@
 <?php
-/**
- * Submit Application from Homepage Contact Form
- * Creates application in database and redirects to success page
- */
-
 require_once __DIR__ . '/includes/functions.php';
 startSecureSession();
 
@@ -11,99 +6,148 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     redirect('index.php');
 }
 
-// Verify CSRF token
 if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
     http_response_code(403);
-    die('Xavfsizlik xatosi. Iltimos sahifani yangilab qayta urinib ko\'ring.');
+    exit('Xavfsizlik xatosi. Iltimos sahifani yangilab qayta urinib ko\'ring.');
 }
 
-// Get form data
-$name = sanitizeInput($_POST['name'] ?? '');
-$phone = sanitizeInput($_POST['phone'] ?? '');
-$serviceType = sanitizeInput($_POST['service_type'] ?? '');
-$message = sanitizeInput($_POST['message'] ?? '');
+$name = trim((string)($_POST['name'] ?? ''));
+$phone = trim((string)($_POST['phone'] ?? ''));
+$serviceType = trim((string)($_POST['service_type'] ?? ''));
+$message = trim((string)($_POST['message'] ?? ''));
 
-// Validate required fields
 $errors = [];
-if (empty($name)) {
-    $errors[] = 'Ismni kiriting';
+
+if (mb_strlen($name) < 2 || mb_strlen($name) > 255) {
+    $errors[] = 'Ismni to\'g\'ri kiriting';
 }
-if (empty($phone) || !isValidPhone($phone)) {
+
+if (!isValidPhone($phone)) {
     $errors[] = 'Telefon raqamini to\'g\'ri kiriting (+998XXXXXXXXX)';
 }
-if (empty($serviceType)) {
+
+if ($serviceType === '') {
     $errors[] = 'Xizmat turini tanlang';
 }
-if (empty($message)) {
-    $errors[] = 'Xabar matnini kiriting';
+
+if (mb_strlen($message) < 3 || mb_strlen($message) > 5000) {
+    $errors[] = 'Xabar matnini to\'g\'ri kiriting';
 }
 
-if (!empty($errors)) {
+if ($errors) {
     $_SESSION['form_errors'] = $errors;
     $_SESSION['form_data'] = $_POST;
     redirect('index.php#contact');
 }
 
-// Find user by phone or create anonymous application
+$now = date('Y-m-d H:i:s');
 $userId = null;
-$user = dbFetchOne("SELECT id FROM users WHERE phone = :phone", ['phone' => $phone]);
-if ($user) {
-    $userId = $user['id'];
-} else {
-    // Create anonymous user for this application
-    $userId = dbInsert('users', [
-        'name' => $name,
-        'phone' => $phone,
-        'email' => null,
-        'status' => 'active',
-        'created_at' => date('Y-m-d H:i:s')
-    ]);
-}
-
-// Get service info if selected
 $serviceId = null;
-$serviceName = null;
-if ($serviceType !== 'other' && is_numeric($serviceType)) {
-    $service = dbFetchOne("SELECT id, title FROM services WHERE id = :id", ['id' => (int)$serviceType]);
-    if ($service) {
-        $serviceId = $service['id'];
-        $serviceName = $service['title'];
-    }
-}
+$serviceName = 'Boshqa';
 
-// Create application
 try {
     dbBeginTransaction();
-    
+
+    $user = dbFetchOne(
+        'SELECT id, full_name, email FROM users WHERE phone = :phone LIMIT 1',
+        ['phone' => $phone]
+    );
+
+    if ($user) {
+        $userId = (int)$user['id'];
+        dbExecute(
+            'UPDATE users SET full_name = :full_name, updated_at = :updated_at WHERE id = :id',
+            [
+                'full_name' => $name,
+                'updated_at' => $now,
+                'id' => $userId
+            ]
+        );
+    } else {
+        $userId = dbInsert('users', [
+            'full_name' => $name,
+            'email' => null,
+            'phone' => $phone,
+            'status' => 'active',
+            'email_verified' => 0,
+            'created_at' => $now,
+            'updated_at' => $now
+        ]);
+    }
+
+    if ($serviceType !== 'other' && ctype_digit($serviceType)) {
+        $service = dbFetchOne(
+            'SELECT id, title_uz FROM services WHERE id = :id AND status = :status LIMIT 1',
+            [
+                'id' => (int)$serviceType,
+                'status' => 'active'
+            ]
+        );
+
+        if (!$service) {
+            throw new RuntimeException('Tanlangan xizmat topilmadi.');
+        }
+
+        $serviceId = (int)$service['id'];
+        $serviceName = (string)$service['title_uz'];
+    }
+
     $applicationId = dbInsert('applications', [
         'user_id' => $userId,
         'service_id' => $serviceId,
-        'service_name_snapshot' => $serviceName ?: ($serviceType === 'other' ? 'Boshqa' : 'Noma\'lum'),
-        'customization_json' => null,
-        'description' => $message,
+        'full_name' => $name,
+        'email' => $user['email'] ?? null,
+        'phone' => $phone,
+        'company_name' => null,
+        'message' => $message,
+        'budget_min' => null,
+        'budget_max' => null,
+        'deadline_date' => null,
         'status' => 'new',
-        'created_at' => date('Y-m-d H:i:s')
+        'priority' => 'medium',
+        'assigned_admin_id' => null,
+        'source' => 'website',
+        'ip_address' => getClientIp(),
+        'user_agent' => mb_substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 1000),
+        'created_at' => $now,
+        'updated_at' => $now,
+        'reviewed_at' => null,
+        'completed_at' => null
     ]);
-    
-    // Create chat thread for this user if doesn't exist
-    getOrCreateChatThread($userId);
-    
-    // Send notification to user
+
+    $threadId = getOrCreateChatThread($userId);
+
+    if ($threadId) {
+        dbExecute(
+            'UPDATE chat_threads SET application_id = :application_id, subject = :subject, last_message_at = :last_message_at, updated_at = :updated_at WHERE id = :id',
+            [
+                'application_id' => $applicationId,
+                'subject' => 'Ariza: ' . $serviceName,
+                'last_message_at' => $now,
+                'updated_at' => $now,
+                'id' => $threadId
+            ]
+        );
+    }
+
     dbInsert('notifications', [
         'user_id' => $userId,
         'title' => 'Arizangiz qabul qilindi',
-        'message' => 'Sizning arizangiz qabul qilindi. Tez orada operatorimiz siz bilan bog\'lanadi.',
-        'is_read' => false,
-        'created_at' => date('Y-m-d H:i:s')
+        'message' => 'Arizangiz muvaffaqiyatli qabul qilindi. Tez orada operatorimiz siz bilan bog\'lanadi.',
+        'type' => 'application',
+        'related_type' => 'application',
+        'related_id' => $applicationId,
+        'is_read' => 0,
+        'read_at' => null,
+        'created_at' => $now
     ]);
-    
+
     dbCommit();
-    
-    // Success - redirect to thank you page
+
     $_SESSION['application_submitted'] = true;
+    $_SESSION['application_id'] = $applicationId;
     redirect('thank-you.php');
-    
-} catch (Exception $e) {
+} catch (Throwable $e) {
     dbRollback();
     error_log('Application submission error: ' . $e->getMessage());
     $_SESSION['form_errors'] = ['Arizani yuborishda xatolik yuz berdi. Iltimos qayta urinib ko\'ring.'];
