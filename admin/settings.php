@@ -1,9 +1,5 @@
 <?php
-/**
- * Admin - Site Settings Management
- * Manage site-wide settings, SEO, contact info
- */
-
+declare(strict_types=1);
 require_once __DIR__ . '/../includes/functions.php';
 requireAdmin();
 
@@ -11,394 +7,78 @@ $admin = getCurrentAdmin();
 $message = '';
 $messageType = '';
 
-// Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? '')) {
-        $message = 'Xavfsizlik tokeni noto\'g\'ri';
+        $message = 'Xavfsizlik tokeni noto\'g\'ri.';
         $messageType = 'error';
     } else {
-        // Contact settings
-        updateSiteSetting('contact_phone', sanitizeInput($_POST['contact_phone'] ?? ''));
-        updateSiteSetting('contact_telegram', sanitizeInput($_POST['contact_telegram'] ?? ''));
-        updateSiteSetting('contact_instagram', sanitizeInput($_POST['contact_instagram'] ?? ''));
-        
-        // SEO settings
-        updateSiteSetting('seo_meta_description', sanitizeInput($_POST['seo_meta_description'] ?? ''));
-        updateSiteSetting('seo_keywords', sanitizeInput($_POST['seo_keywords'] ?? ''));
-        updateSiteSetting('site_title', sanitizeInput($_POST['site_title'] ?? 'WebHub.uz'));
-        
-        // Theme settings
-        updateSiteSetting('theme_color_primary', sanitizeInput($_POST['theme_color_primary'] ?? '#3B82F6'));
-        
-        // Stat overrides
-        updateSiteSetting('stat_projects_override', $_POST['stat_projects_override'] !== '' ? (int) $_POST['stat_projects_override'] : null);
-        updateSiteSetting('stat_clients_override', $_POST['stat_clients_override'] !== '' ? (int) $_POST['stat_clients_override'] : null);
-        
-        // Upload limits
-        updateSiteSetting('max_upload_image_mb', max(1, min(50, (int) ($_POST['max_upload_image_mb'] ?? 10))));
-        updateSiteSetting('max_upload_doc_mb', max(1, min(100, (int) ($_POST['max_upload_doc_mb'] ?? 20))));
-        
-        logAdminAction($admin['id'], 'settings_update', 'site_settings', null);
-        $message = 'Sozlamalar saqlandi';
+        $fields = [
+            'site_name' => trim($_POST['site_name'] ?? 'SOON'),
+            'site_title' => trim($_POST['site_title'] ?? 'SOON — Raqamli yechimlar'),
+            'site_description' => trim($_POST['site_description'] ?? ''),
+            'contact_phone' => trim($_POST['contact_phone'] ?? ''),
+            'contact_email' => trim($_POST['contact_email'] ?? ''),
+            'contact_telegram' => trim($_POST['contact_telegram'] ?? ''),
+            'contact_instagram' => trim($_POST['contact_instagram'] ?? ''),
+            'contact_address' => trim($_POST['contact_address'] ?? ''),
+            'theme_color' => trim($_POST['theme_color'] ?? '#2563eb'),
+        ];
+        foreach ($fields as $key => $value) {
+            updateSiteSetting($key, $value);
+        }
+        updateSiteSetting('stat_projects_override', $_POST['stat_projects_override'] !== '' ? (int)$_POST['stat_projects_override'] : null);
+        updateSiteSetting('stat_clients_override', $_POST['stat_clients_override'] !== '' ? (int)$_POST['stat_clients_override'] : null);
+        logAdminAction($admin['id'], 'settings_update', 'settings', null);
+        $message = 'Sozlamalar muvaffaqiyatli saqlandi.';
         $messageType = 'success';
     }
 }
 
-// Get current settings
 $settings = getAllSiteSettings();
-
-// Backup action
-if (isset($_GET['action']) && $_GET['action'] === 'backup') {
-    header('Content-Type: text/sql');
-    header('Content-Disposition: attachment; filename="webhub_backup_' . date('Y-m-d_H-i-s') . '.sql"');
-    
-    $tables = ['users', 'admins', 'services', 'portfolio', 'blog_posts', 'applications', 
-               'chat_threads', 'chat_messages', 'notifications', 'site_settings', 
-               'api_tokens', 'media', 'audit_log'];
-    
-    foreach ($tables as $table) {
-        echo "-- Table: {$table}\n";
-        $result = dbQuery("SHOW CREATE TABLE {$table}")->fetch();
-        echo $result['Create Table'] . ";\n\n";
-        
-        $rows = dbFetchAll("SELECT * FROM {$table}");
-        if (!empty($rows)) {
-            foreach ($rows as $row) {
-                $columns = array_keys($row);
-                $values = array_map(function($v) {
-                    return $v === null ? 'NULL' : "'" . addslashes($v) . "'";
-                }, array_values($row));
-                echo "INSERT INTO {$table} (" . implode(', ', $columns) . ") VALUES (" . implode(', ', $values) . ");\n";
-            }
-        }
-        echo "\n";
-    }
-    exit;
-}
-
-// JSON export action
-if (isset($_GET['action']) && $_GET['action'] === 'export_json') {
-    header('Content-Type: application/json');
-    header('Content-Disposition: attachment; filename="webhub_content_' . date('Y-m-d_H-i-s') . '.json"');
-    
-    $export = [
-        'services' => dbFetchAll("SELECT * FROM services"),
-        'portfolio' => dbFetchAll("SELECT * FROM portfolio"),
-        'blog_posts' => dbFetchAll("SELECT * FROM blog_posts WHERE status = 'published'"),
-        'site_settings' => getAllSiteSettings()
-    ];
-    
-    echo json_encode($export, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-    exit;
+$csrf = generateCsrfToken();
+function settingValue(array $settings, string $key, string $default = ''): string {
+    return htmlspecialchars((string)($settings[$key] ?? $default), ENT_QUOTES, 'UTF-8');
 }
 ?>
-<!DOCTYPE html>
+<!doctype html>
 <html lang="uz">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sozlamalar - WebHub Admin</title>
-    <link rel="stylesheet" href="../assets/css/main.css">
-    <style>
-        body { background: var(--bg-secondary); }
-        
-        .admin-layout {
-            display: grid;
-            grid-template-columns: 260px 1fr;
-            min-height: 100vh;
-        }
-        
-        @media (max-width: 1024px) {
-            .admin-layout {
-                grid-template-columns: 1fr;
-            }
-        }
-        
-        .sidebar {
-            background: var(--bg-primary);
-            border-right: 1px solid var(--border-color);
-            padding: 24px;
-            position: sticky;
-            top: 0;
-            height: 100vh;
-            overflow-y: auto;
-        }
-        
-        .logo {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: var(--primary);
-            margin-bottom: 32px;
-            display: block;
-            text-decoration: none;
-        }
-        
-        .nav-menu {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        
-        .nav-link {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px 16px;
-            border-radius: 12px;
-            color: var(--text-secondary);
-            text-decoration: none;
-            transition: all 0.2s ease;
-        }
-        
-        .nav-link:hover, .nav-link.active {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-        }
-        
-        .nav-link.active {
-            background: rgba(59, 130, 246, 0.1);
-            color: var(--primary);
-        }
-        
-        .main-content {
-            padding: 32px;
-        }
-        
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 32px;
-            flex-wrap: wrap;
-            gap: 16px;
-        }
-        
-        .card {
-            background: var(--bg-primary);
-            border-radius: 16px;
-            padding: 24px;
-            margin-bottom: 24px;
-        }
-        
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-        
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        
-        .alert-success { background: #D1FAE5; color: #047857; }
-        .alert-error { background: #FEE2E2; color: #B91C1C; }
-        
-        .form-group {
-            margin-bottom: 16px;
-        }
-        
-        .form-label {
-            display: block;
-            margin-bottom: 6px;
-            font-weight: 500;
-        }
-        
-        .form-input, .form-textarea {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            font-size: 1rem;
-        }
-        
-        .form-textarea {
-            min-height: 80px;
-            resize: vertical;
-        }
-        
-        .form-row {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 16px;
-        }
-        
-        .btn-group {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-        
-        .section-title {
-            font-size: 1.2rem;
-            font-weight: 600;
-            margin-bottom: 20px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid var(--border-color);
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sozlamalar — SOON Admin</title>
+<link rel="stylesheet" href="../assets/css/main.css">
+<style>
+body{background:var(--bg-secondary)}.admin-layout{display:grid;grid-template-columns:250px 1fr;min-height:100vh}.sidebar{padding:24px;background:var(--bg-primary);border-right:1px solid var(--border-color);position:sticky;top:0;height:100vh}.logo{display:block;font-size:1.5rem;font-weight:800;color:var(--primary);text-decoration:none;margin-bottom:28px}.nav-menu{display:flex;flex-direction:column;gap:6px}.nav-link{padding:11px 14px;border-radius:12px;text-decoration:none;color:var(--text-secondary)}.nav-link:hover,.nav-link.active{background:var(--bg-tertiary);color:var(--text-primary)}.main-content{padding:32px;max-width:1100px;width:100%}.header{margin-bottom:24px}.card{background:var(--bg-primary);border:1px solid var(--border-color);border-radius:18px;padding:24px;margin-bottom:20px}.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.form-group{margin-bottom:16px}.form-label{display:block;margin-bottom:7px;font-weight:600}.form-input,.form-textarea{box-sizing:border-box;width:100%;padding:11px 13px;border:1px solid var(--border-color);border-radius:10px;background:var(--bg-secondary);color:var(--text-primary)}.form-textarea{min-height:100px;resize:vertical}.btn{display:inline-block;border:0;border-radius:10px;padding:11px 18px;cursor:pointer}.btn-primary{background:var(--primary);color:#fff}.alert{padding:12px 15px;border-radius:10px;margin-bottom:18px}.alert-success{background:#dcfce7;color:#166534}.alert-error{background:#fee2e2;color:#991b1b}@media(max-width:800px){.admin-layout{grid-template-columns:1fr}.sidebar{position:static;height:auto}.main-content{padding:20px}}
+</style>
 </head>
 <body>
-    <div class="admin-layout">
-        <!-- Sidebar -->
-        <aside class="sidebar">
-            <a href="dashboard.php" class="logo">WebHub Admin</a>
-            
-            <nav class="nav-menu">
-                <a href="dashboard.php" class="nav-link">📊 Dashboard</a>
-                <a href="services.php" class="nav-link">🛠 Xizmatlar</a>
-                <a href="portfolio.php" class="nav-link">📁 Portfolio</a>
-                <a href="blog.php" class="nav-link">📝 Blog</a>
-                <a href="applications.php" class="nav-link">📋 Arizalar</a>
-                <a href="users.php" class="nav-link">👥 Foydalanuvchilar</a>
-                <a href="chat.php" class="nav-link">💬 Chat</a>
-                <a href="settings.php" class="nav-link active">⚙ Sozlamalar</a>
-                <hr style="border: none; border-top: 1px solid var(--border-color); margin: 8px 0;">
-                <a href="../index.php" target="_blank" class="nav-link">🌐 Saytni ko'rish</a>
-                <a href="logout.php" class="nav-link" style="color: var(--error);">🚪 Chiqish</a>
-            </nav>
-        </aside>
-        
-        <!-- Main Content -->
-        <main class="main-content">
-            <div class="header">
-                <div>
-                    <h1 style="margin-bottom: 4px;">Sozlamalar</h1>
-                    <p style="color: var(--text-muted);">Sayt sozlamalarini boshqarish</p>
-                </div>
-                <button data-theme-toggle class="btn btn-secondary">🌓 Mavzu</button>
-            </div>
-            
-            <?php if ($message): ?>
-            <div class="alert alert-<?php echo $messageType; ?>"><?php echo e($message); ?></div>
-            <?php endif; ?>
-            
-            <form method="POST">
-                <input type="hidden" name="csrf_token" value="<?php echo generateCsrfToken(); ?>">
-                
-                <!-- Contact Settings -->
-                <div class="card">
-                    <h3 class="section-title">📞 Aloqa ma'lumotlari</h3>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label class="form-label">Telefon raqam</label>
-                            <input type="tel" name="contact_phone" class="form-input" 
-                                   value="<?php echo e($settings['contact_phone'] ?? ''); ?>" 
-                                   placeholder="+998 XX XXX XX XX">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="form-label">Telegram</label>
-                            <input type="text" name="contact_telegram" class="form-input" 
-                                   value="<?php echo e($settings['contact_telegram'] ?? ''); ?>" 
-                                   placeholder="@username">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="form-label">Instagram</label>
-                            <input type="text" name="contact_instagram" class="form-input" 
-                                   value="<?php echo e($settings['contact_instagram'] ?? ''); ?>" 
-                                   placeholder="@username">
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- SEO Settings -->
-                <div class="card">
-                    <h3 class="section-title">🔍 SEO sozlamalari</h3>
-                    
-                    <div class="form-group">
-                        <label class="form-label">Sayt nomi</label>
-                        <input type="text" name="site_title" class="form-input" 
-                               value="<?php echo e($settings['site_title'] ?? 'WebHub.uz'); ?>">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="form-label">Meta tavsif (Description)</label>
-                        <textarea name="seo_meta_description" class="form-textarea"><?php echo e($settings['seo_meta_description'] ?? ''); ?></textarea>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label class="form-label">Kalit so'zlar (Keywords)</label>
-                        <input type="text" name="seo_keywords" class="form-input" 
-                               value="<?php echo e($settings['seo_keywords'] ?? ''); ?>" 
-                               placeholder="veb-sayt, telegram bot, dasturlash">
-                    </div>
-                </div>
-                
-                <!-- Theme Settings -->
-                <div class="card">
-                    <h3 class="section-title">🎨 Mavzu sozlamalari</h3>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label class="form-label">Asosiy rang</label>
-                            <input type="color" name="theme_color_primary" class="form-input" 
-                                   value="<?php echo e($settings['theme_color_primary'] ?? '#3B82F6'); ?>" 
-                                   style="height: 50px;">
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Stat Overrides -->
-                <div class="card">
-                    <h3 class="section-title">📊 Statistika (ixtiyoriy)</h3>
-                    <p style="color: var(--text-muted); margin-bottom: 16px; font-size: 0.9rem;">
-                        Bo'sh qoldirilsa, haqiqiy ma'lumotlar bazasidan hisoblanadi.
-                    </p>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label class="form-label">Loyihalar soni (override)</label>
-                            <input type="number" name="stat_projects_override" class="form-input" 
-                                   value="<?php echo e($settings['stat_projects_override'] ?? ''); ?>" 
-                                   placeholder="Avto">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="form-label">Mijozlar soni (override)</label>
-                            <input type="number" name="stat_clients_override" class="form-input" 
-                                   value="<?php echo e($settings['stat_clients_override'] ?? ''); ?>" 
-                                   placeholder="Avto">
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Upload Limits -->
-                <div class="card">
-                    <h3 class="section-title">📁 Yuklash limitlari (MB)</h3>
-                    
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label class="form-label">Rasm maksimal hajmi</label>
-                            <input type="number" name="max_upload_image_mb" class="form-input" 
-                                   value="<?php echo (int) ($settings['max_upload_image_mb'] ?? 10); ?>" 
-                                   min="1" max="50">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label class="form-label">Hujjat maksimal hajmi</label>
-                            <input type="number" name="max_upload_doc_mb" class="form-input" 
-                                   value="<?php echo (int) ($settings['max_upload_doc_mb'] ?? 20); ?>" 
-                                   min="1" max="100">
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="btn-group">
-                    <button type="submit" class="btn btn-primary">💾 Saqlash</button>
-                    <a href="?action=backup" class="btn btn-secondary" target="_blank">📦 SQL Backup</a>
-                    <a href="?action=export_json" class="btn btn-secondary" target="_blank">📄 JSON Export</a>
-                </div>
-            </form>
-        </main>
-    </div>
-    
-    <script src="../assets/js/main.js"></script>
-</body>
-</html>
+<div class="admin-layout">
+<aside class="sidebar">
+<a class="logo" href="dashboard.php">SOON Admin</a>
+<nav class="nav-menu">
+<a href="dashboard.php" class="nav-link">📊 Dashboard</a><a href="services.php" class="nav-link">🛠 Xizmatlar</a><a href="portfolio.php" class="nav-link">📁 Portfolio</a><a href="blog.php" class="nav-link">📝 Blog</a><a href="applications.php" class="nav-link">📋 Arizalar</a><a href="users.php" class="nav-link">👥 Foydalanuvchilar</a><a href="chat.php" class="nav-link">💬 Chat</a><a href="branding.php" class="nav-link">🎨 Branding</a><a href="settings.php" class="nav-link active">⚙ Sozlamalar</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="header"><h1>Sayt sozlamalari</h1><p>SOON platformasining umumiy ma'lumotlari, aloqa va SEO sozlamalari.</p></div>
+<?php if ($message): ?><div class="alert alert-<?= $messageType ?>"><?= htmlspecialchars($message, ENT_QUOTES, 'UTF-8') ?></div><?php endif; ?>
+<form method="post" autocomplete="off">
+<input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+<section class="card"><h2>Asosiy ma'lumotlar</h2><div class="form-row">
+<div class="form-group"><label class="form-label">Sayt nomi</label><input class="form-input" name="site_name" value="<?= settingValue($settings,'site_name','SOON') ?>" required></div>
+<div class="form-group"><label class="form-label">SEO title</label><input class="form-input" name="site_title" value="<?= settingValue($settings,'site_title','SOON — Raqamli yechimlar') ?>"></div>
+</div><div class="form-group"><label class="form-label">Meta description</label><textarea class="form-textarea" name="site_description"><?= settingValue($settings,'site_description') ?></textarea></div></section>
+<section class="card"><h2>Aloqa</h2><div class="form-row">
+<div class="form-group"><label class="form-label">Telefon</label><input class="form-input" name="contact_phone" value="<?= settingValue($settings,'contact_phone') ?>"></div>
+<div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" name="contact_email" value="<?= settingValue($settings,'contact_email') ?>"></div>
+<div class="form-group"><label class="form-label">Telegram</label><input class="form-input" name="contact_telegram" value="<?= settingValue($settings,'contact_telegram') ?>"></div>
+<div class="form-group"><label class="form-label">Instagram</label><input class="form-input" name="contact_instagram" value="<?= settingValue($settings,'contact_instagram') ?>"></div>
+</div><div class="form-group"><label class="form-label">Manzil</label><input class="form-input" name="contact_address" value="<?= settingValue($settings,'contact_address') ?>"></div></section>
+<section class="card"><h2>Statistika</h2><div class="form-row">
+<div class="form-group"><label class="form-label">Loyihalar override</label><input type="number" min="0" class="form-input" name="stat_projects_override" value="<?= settingValue($settings,'stat_projects_override') ?>"></div>
+<div class="form-group"><label class="form-label">Mijozlar override</label><input type="number" min="0" class="form-input" name="stat_clients_override" value="<?= settingValue($settings,'stat_clients_override') ?>"></div>
+<div class="form-group"><label class="form-label">Asosiy rang</label><input type="text" class="form-input" name="theme_color" value="<?= settingValue($settings,'theme_color','#2563eb') ?>" pattern="^#[0-9A-Fa-f]{6}$"></div>
+</div></section>
+<button class="btn btn-primary" type="submit">Saqlash</button>
+</form>
+</main></div></body></html>
