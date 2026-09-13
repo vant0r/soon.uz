@@ -1,126 +1,110 @@
 <?php
-/**
- * POST /api/auth/google - Exchange Google auth code for WebHub API token
- * Rate limit: 10 requests/minute per IP
- */
-
 require_once __DIR__ . '/config.php';
 
-// Rate limiting
 if (!checkRateLimit(10, 60)) {
-    apiError('Juda ko\'p so\'rovlar. Iltimos biroz kuting.', 429);
+    apiError('Juda ko‘p so‘rovlar. Iltimos biroz kuting.', 429);
 }
 
-// Only accept POST
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    apiError('Faqat POST so\'rovi qabul qilinadi.', 405);
+    apiError('Faqat POST so‘rovi qabul qilinadi.', 405);
 }
 
-// Get JSON input
-$input = file_get_contents('php://input');
-$data = json_decode($input, true);
-
-if (!$data || !isset($data['code'])) {
+$data = json_decode(file_get_contents('php://input'), true);
+if (!is_array($data) || empty($data['code']) || !is_string($data['code'])) {
     apiError('Google authorization code talab qilinadi.', 400);
 }
 
-$googleCode = $data['code'];
-
-// Exchange code for Google tokens
-$oauthUrl = 'https://oauth2.googleapis.com/token';
 $postData = http_build_query([
-    'code' => $googleCode,
+    'code' => $data['code'],
     'client_id' => GOOGLE_CLIENT_ID,
     'client_secret' => GOOGLE_CLIENT_SECRET,
     'redirect_uri' => GOOGLE_REDIRECT_URI,
     'grant_type' => 'authorization_code'
 ]);
 
-$options = [
+$context = stream_context_create([
     'http' => [
         'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
         'method' => 'POST',
-        'content' => $postData
+        'content' => $postData,
+        'timeout' => 15,
+        'ignore_errors' => true
     ]
-];
-
-$context = stream_context_create($options);
-$response = file_get_contents($oauthUrl, false, $context);
-
+]);
+$response = @file_get_contents('https://oauth2.googleapis.com/token', false, $context);
 if ($response === false) {
-    apiError('Google bilan bog\'lanishda xatolik yuz berdi.', 500);
+    apiError('Google bilan bog‘lanishda xatolik yuz berdi.', 502);
 }
 
 $tokenData = json_decode($response, true);
-
-if (!isset($tokenData['access_token']) || !isset($tokenData['id_token'])) {
+if (!is_array($tokenData) || empty($tokenData['access_token'])) {
     apiError('Google tokenlarini olishda xatolik.', 400);
 }
 
-// Get user info from Google
-$userInfoUrl = 'https://www.googleapis.com/oauth2/v2/userinfo';
-$options = [
+$userContext = stream_context_create([
     'http' => [
-        'header' => "Authorization: Bearer " . $tokenData['access_token'] . "\r\n"
+        'header' => "Authorization: Bearer {$tokenData['access_token']}\r\n",
+        'timeout' => 15,
+        'ignore_errors' => true
     ]
-];
-
-$context = stream_context_create($options);
-$userInfo = file_get_contents($userInfoUrl, false, $context);
-
+]);
+$userInfo = @file_get_contents('https://www.googleapis.com/oauth2/v2/userinfo', false, $userContext);
 if ($userInfo === false) {
-    apiError('Foydalanuvchi ma\'lumotlarini olishda xatolik.', 500);
+    apiError('Google foydalanuvchi ma’lumotlarini olishda xatolik.', 502);
 }
 
 $googleUser = json_decode($userInfo, true);
-
-if (!isset($googleUser['id'])) {
-    apiError('Google foydalanuvchi ID topilmadi.', 500);
+if (!is_array($googleUser) || empty($googleUser['id']) || empty($googleUser['email'])) {
+    apiError('Google foydalanuvchi ma’lumotlari yaroqsiz.', 400);
 }
 
-$pdo = getDbConnection();
+$email = strtolower(trim($googleUser['email']));
+$name = trim($googleUser['name'] ?? '');
+if ($name === '') {
+    $name = trim(($googleUser['given_name'] ?? '') . ' ' . ($googleUser['family_name'] ?? '')) ?: $email;
+}
 
-// Check if user exists or create new
-$existingUser = dbFetchOne("SELECT id FROM users WHERE google_id = ?", [$googleUser['id']]);
+$existingUser = dbFetchOne('SELECT id, status FROM users WHERE google_id = :google_id OR email = :email LIMIT 1', [
+    'google_id' => $googleUser['id'],
+    'email' => $email
+]);
 
 if ($existingUser) {
-    $userId = $existingUser['id'];
-} else {
-    // Create new user
-    $userData = [
+    if (($existingUser['status'] ?? '') !== 'active') {
+        apiError('Foydalanuvchi hisobi faol emas.', 403);
+    }
+    $userId = (int) $existingUser['id'];
+    dbUpdate('users', [
         'google_id' => $googleUser['id'],
-        'name' => $googleUser['name'] ?? ($googleUser['given_name'] . ' ' . $googleUser['family_name']),
-        'email' => $googleUser['email'] ?? null,
-        'avatar' => $googleUser['picture'] ?? null,
+        'full_name' => $name,
+        'avatar_url' => $googleUser['picture'] ?? null,
+        'email_verified' => 1,
+        'last_login_at' => date('Y-m-d H:i:s')
+    ], 'id = :id', ['id' => $userId]);
+} else {
+    $userId = dbInsert('users', [
+        'google_id' => $googleUser['id'],
+        'email' => $email,
+        'full_name' => $name,
+        'avatar_url' => $googleUser['picture'] ?? null,
         'status' => 'active',
-        'created_at' => date('Y-m-d H:i:s')
-    ];
-    
-    $userId = dbInsert('users', $userData);
+        'email_verified' => 1,
+        'last_login_at' => date('Y-m-d H:i:s')
+    ]);
 }
 
-// Delete any existing tokens for this user
-dbDelete('api_tokens', 'user_id = ?', [$userId]);
-
-// Generate new API token
+dbDelete('api_tokens', 'user_id = :user_id', ['user_id' => $userId]);
 $apiToken = bin2hex(random_bytes(32));
 $expiresAt = date('Y-m-d H:i:s', strtotime('+30 days'));
-
 dbInsert('api_tokens', [
     'user_id' => $userId,
-    'token' => $apiToken,
-    'created_at' => date('Y-m-d H:i:s'),
+    'token_hash' => hash('sha256', $apiToken),
     'expires_at' => $expiresAt
 ]);
 
-// Ensure chat thread exists for this user
-$existingThread = dbFetchOne("SELECT id FROM chat_threads WHERE user_id = ?", [$userId]);
-
+$existingThread = dbFetchOne('SELECT id FROM chat_threads WHERE user_id = :user_id AND status = :status LIMIT 1', ['user_id' => $userId, 'status' => 'open']);
 if (!$existingThread) {
-    dbInsert('chat_threads', [
-        'user_id' => $userId,
-        'created_at' => date('Y-m-d H:i:s')
-    ]);
+    dbInsert('chat_threads', ['user_id' => $userId, 'status' => 'open']);
 }
 
 apiResponse([
@@ -130,8 +114,8 @@ apiResponse([
         'expires_at' => $expiresAt,
         'user' => [
             'id' => $userId,
-            'name' => $googleUser['name'] ?? '',
-            'email' => $googleUser['email'] ?? '',
+            'name' => $name,
+            'email' => $email,
             'avatar' => $googleUser['picture'] ?? null
         ]
     ],
