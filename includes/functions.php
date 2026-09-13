@@ -74,11 +74,6 @@ function isAdminLoggedIn() {
     return getCurrentAdmin() !== null;
 }
 
-function requireAdmin() {
-    startSecureSession();
-    if (!isAdminLoggedIn()) redirect(SITE_URL . '/admin/login.php');
-}
-
 function getAdminPermissions($admin = null) {
     $admin = $admin ?: getCurrentAdmin();
     if (!$admin) return [];
@@ -86,15 +81,54 @@ function getAdminPermissions($admin = null) {
     if ($role === 'super_admin') return ['*'];
     try {
         $rows = dbFetchAll('SELECT p.permission_key FROM admin_role_permissions rp INNER JOIN admin_permissions p ON p.id = rp.permission_id WHERE rp.role = :role', ['role' => $role]);
-        return array_values(array_unique(array_column($rows, 'permission_key')));
+        $permissions = array_values(array_unique(array_column($rows, 'permission_key')));
+        if ($permissions) return $permissions;
     } catch (Throwable $e) {
-        return [];
     }
+    $fallback = [
+        'admin' => ['dashboard.view','applications.view','applications.manage','users.view','users.manage','services.view','services.manage','portfolio.view','portfolio.manage','blog.view','blog.manage','chat.view','chat.manage','branding.manage'],
+        'manager' => ['dashboard.view','applications.view','applications.manage','users.view','services.view','portfolio.view','blog.view','chat.view','chat.manage']
+    ];
+    return $fallback[$role] ?? [];
 }
 
 function adminHasPermission($permission, $admin = null) {
     $permissions = getAdminPermissions($admin);
     return in_array('*', $permissions, true) || in_array($permission, $permissions, true);
+}
+
+function requireAdmin() {
+    startSecureSession();
+    $admin = getCurrentAdmin();
+    if (!$admin) redirect(SITE_URL . '/admin/login.php');
+    $page = basename((string)($_SERVER['SCRIPT_NAME'] ?? ''));
+    $viewMap = [
+        'dashboard.php' => 'dashboard.view',
+        'applications.php' => 'applications.view',
+        'users.php' => 'users.view',
+        'services.php' => 'services.view',
+        'portfolio.php' => 'portfolio.view',
+        'blog.php' => 'blog.view',
+        'chat.php' => 'chat.view',
+        'branding.php' => 'branding.manage',
+        'settings.php' => 'settings.manage'
+    ];
+    $permission = $viewMap[$page] ?? null;
+    if ($permission && !adminHasPermission($permission, $admin)) {
+        http_response_code(403);
+        exit('403 Forbidden');
+    }
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && $permission) {
+        $manageMap = [
+            'applications.php' => 'applications.manage', 'users.php' => 'users.manage', 'services.php' => 'services.manage',
+            'portfolio.php' => 'portfolio.manage', 'blog.php' => 'blog.manage', 'chat.php' => 'chat.manage'
+        ];
+        $managePermission = $manageMap[$page] ?? $permission;
+        if (!adminHasPermission($managePermission, $admin)) {
+            http_response_code(403);
+            exit('403 Forbidden');
+        }
+    }
 }
 
 function requireAdminPermission($permission) {
@@ -134,13 +168,7 @@ function getOrCreateChatThread($userId, $applicationId = null) {
     $sql .= ' ORDER BY updated_at DESC LIMIT 1';
     $thread = dbFetchOne($sql, $params);
     if ($thread) return $thread;
-    $threadId = dbInsert('chat_threads', [
-        'application_id' => $applicationId !== null ? (int)$applicationId : null,
-        'user_id' => (int)$userId,
-        'status' => 'open',
-        'unread_user_count' => 0,
-        'unread_admin_count' => 0
-    ]);
+    $threadId = dbInsert('chat_threads', ['application_id' => $applicationId !== null ? (int)$applicationId : null, 'user_id' => (int)$userId, 'status' => 'open', 'unread_user_count' => 0, 'unread_admin_count' => 0]);
     return dbFetchOne('SELECT * FROM chat_threads WHERE id = :id', ['id' => $threadId]);
 }
 
