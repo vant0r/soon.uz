@@ -1,0 +1,15 @@
+# WebHub.uz robots.txt
+# SEO configuration for web crawler access
+
+User-agent: *
+Allow: /
+
+# Disallow admin and user panels
+Disallow: /admin/
+Disallow: /user/
+Disallow: /api/
+Disallow: /includes/
+Disallow: /uploads/
+
+# Sitemap location
+Sitemap: https://webhub.uz/sitemap.xml
