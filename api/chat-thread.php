@@ -209,20 +209,6 @@ try {
         'id' => $threadId
     ]);
 
-    $pdo->prepare(
-        'UPDATE chat_messages
-         SET is_read = 1, read_at = :read_at
-         WHERE thread_id = :thread_id
-           AND sender_type = :sender_type
-           AND sender_id = :sender_id
-           AND is_read = 0'
-    )->execute([
-        'read_at' => $now,
-        'thread_id' => $threadId,
-        'sender_type' => 'admin',
-        'sender_id' => 0
-    ]);
-
     $pdo->commit();
 
     $baseUrl = rtrim(getSiteSetting('site_url', ''), '/');
