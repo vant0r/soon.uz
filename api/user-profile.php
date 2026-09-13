@@ -1,13 +1,6 @@
 <?php
-/**
- * GET /api/user/profile - Get current user's profile
- * PUT /api/user/profile - Update profile
- * Rate limit: 60 requests/minute per token
- */
-
 require_once __DIR__ . '/config.php';
 
-// Rate limiting
 if (!checkRateLimit(60, 60)) {
     apiError('Juda ko\'p so\'rovlar. Iltimos biroz kuting.', 429);
 }
@@ -15,91 +8,75 @@ if (!checkRateLimit(60, 60)) {
 $userId = requireAuth();
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    // Get user profile
-    $user = dbFetchOne("SELECT id, google_id, name, email, phone, avatar, status, created_at 
-                        FROM users WHERE id = ?", [$userId]);
-    
+    $user = dbFetchOne("SELECT id, google_id, full_name, email, phone, avatar_url, status, email_verified, created_at, updated_at, last_login_at FROM users WHERE id = ?", [$userId]);
     if (!$user) {
         apiError('Foydalanuvchi topilmadi.', 404);
     }
-    
-    $baseUrl = 'https://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
-    
-    apiResponse([
-        'success' => true,
-        'data' => [
-            'id' => (int)$user['id'],
-            'google_id' => $user['google_id'],
-            'name' => $user['name'],
-            'email' => $user['email'],
-            'phone' => $user['phone'],
-            'avatar' => $user['avatar'],
-            'status' => $user['status'],
-            'created_at' => $user['created_at']
-        ]
-    ]);
-    
-} elseif ($_SERVER['REQUEST_METHOD'] === 'PUT') {
-    // Update profile
-    $input = file_get_contents('php://input');
-    $data = json_decode($input, true);
-    
-    if (!$data) {
+    apiResponse(['success' => true, 'data' => [
+        'id' => (int)$user['id'],
+        'google_id' => $user['google_id'],
+        'full_name' => $user['full_name'],
+        'email' => $user['email'],
+        'phone' => $user['phone'],
+        'avatar_url' => $user['avatar_url'],
+        'status' => $user['status'],
+        'email_verified' => (bool)$user['email_verified'],
+        'created_at' => $user['created_at'],
+        'updated_at' => $user['updated_at'],
+        'last_login_at' => $user['last_login_at']
+    ]]);
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'PUT') {
+    $data = json_decode(file_get_contents('php://input'), true);
+    if (!is_array($data)) {
         apiError('Noto\'g\'ri so\'rov formati.', 400);
     }
-    
     $errors = [];
     $updateData = [];
-    
-    // Validate and update name
-    if (isset($data['name'])) {
-        $name = trim($data['name']);
-        if (strlen($name) < 2) {
-            $errors['name'] = 'Ism juda qisqa (min 2 belgi).';
+    if (array_key_exists('full_name', $data)) {
+        $name = trim((string)$data['full_name']);
+        if (mb_strlen($name) < 2 || mb_strlen($name) > 120) {
+            $errors['full_name'] = 'Ism 2 dan 120 belgigacha bo\'lishi kerak.';
         } else {
-            $updateData['name'] = $name;
+            $updateData['full_name'] = $name;
         }
     }
-    
-    // Validate and update phone
-    if (isset($data['phone'])) {
-        $phone = trim($data['phone'] ?? '');
+    if (array_key_exists('phone', $data)) {
+        $phone = trim((string)$data['phone']);
         if ($phone !== '' && !isValidPhone($phone)) {
             $errors['phone'] = 'Telefon raqam +998XXXXXXXXX formatida bo\'lishi kerak.';
         } else {
             $updateData['phone'] = $phone === '' ? null : $phone;
         }
     }
-    
-    if (!empty($errors)) {
+    if ($errors) {
         apiError('Validatsiya xatosi.', 422, $errors);
     }
-    
-    if (empty($updateData)) {
+    if (!$updateData) {
         apiError('Yangilanishi kerak bo\'lgan ma\'lumot yo\'q.', 400);
     }
-    
+    if (isset($updateData['phone'])) {
+        $existing = dbFetchOne('SELECT id FROM users WHERE phone = ? AND id <> ? LIMIT 1', [$updateData['phone'], $userId]);
+        if ($existing) {
+            apiError('Bu telefon raqami boshqa akkauntga tegishli.', 409);
+        }
+    }
     dbUpdate('users', $updateData, 'id = ?', ['id' => $userId]);
-    
-    // Get updated user data
-    $user = dbFetchOne("SELECT id, google_id, name, email, phone, avatar, status, created_at 
-                        FROM users WHERE id = ?", [$userId]);
-    
-    apiResponse([
-        'success' => true,
-        'data' => [
-            'id' => (int)$user['id'],
-            'google_id' => $user['google_id'],
-            'name' => $user['name'],
-            'email' => $user['email'],
-            'phone' => $user['phone'],
-            'avatar' => $user['avatar'],
-            'status' => $user['status'],
-            'created_at' => $user['created_at']
-        ],
-        'message' => 'Profil muvaffaqiyatli yangilandi'
-    ]);
-    
-} else {
-    apiError('Faqat GET va PUT so\'rovlari qabul qilinadi.', 405);
+    $user = dbFetchOne("SELECT id, google_id, full_name, email, phone, avatar_url, status, email_verified, created_at, updated_at, last_login_at FROM users WHERE id = ?", [$userId]);
+    apiResponse(['success' => true, 'data' => [
+        'id' => (int)$user['id'],
+        'google_id' => $user['google_id'],
+        'full_name' => $user['full_name'],
+        'email' => $user['email'],
+        'phone' => $user['phone'],
+        'avatar_url' => $user['avatar_url'],
+        'status' => $user['status'],
+        'email_verified' => (bool)$user['email_verified'],
+        'created_at' => $user['created_at'],
+        'updated_at' => $user['updated_at'],
+        'last_login_at' => $user['last_login_at']
+    ], 'message' => 'Profil muvaffaqiyatli yangilandi']);
 }
+
+apiError('Faqat GET va PUT so\'rovlari qabul qilinadi.', 405);
