@@ -23,48 +23,55 @@ function redirect($url) {
     exit;
 }
 
-/**
- * Read a site setting directly from the database.
- * Direct reads avoid stale values after an admin update.
- */
+/** Read a site setting from the canonical settings table. */
 function getSiteSetting($key, $default = null) {
     $result = dbFetchOne(
-        "SELECT value FROM site_settings WHERE `key` = :key",
+        "SELECT setting_value FROM settings WHERE setting_key = :key LIMIT 1",
         ['key' => $key]
     );
-    return $result ? $result['value'] : $default;
+    return $result ? $result['setting_value'] : $default;
 }
 
-function updateSiteSetting($key, $value) {
+/** Create or update a site setting without stale caching. */
+function updateSiteSetting($key, $value, $type = 'string', $group = 'general') {
     $existing = dbFetchOne(
-        "SELECT id FROM site_settings WHERE `key` = :key",
+        "SELECT id FROM settings WHERE setting_key = :key LIMIT 1",
         ['key' => $key]
     );
 
+    $data = [
+        'setting_key' => $key,
+        'setting_value' => $value,
+        'setting_type' => $type,
+        'group_name' => $group
+    ];
+
     if ($existing) {
-        dbUpdate('site_settings', ['value' => $value], '`key` = :key', ['key' => $key]);
+        dbUpdate('settings', [
+            'setting_value' => $value,
+            'setting_type' => $type,
+            'group_name' => $group
+        ], 'id = :id', ['id' => $existing['id']]);
     } else {
-        dbInsert('site_settings', ['key' => $key, 'value' => $value]);
+        dbInsert('settings', $data);
     }
 }
 
 function getAllSiteSettings() {
-    $results = dbFetchAll("SELECT `key`, value FROM site_settings");
+    $results = dbFetchAll("SELECT setting_key, setting_value FROM settings ORDER BY group_name, setting_key");
     $settings = [];
     foreach ($results as $row) {
-        $settings[$row['key']] = $row['value'];
+        $settings[$row['setting_key']] = $row['setting_value'];
     }
     return $settings;
 }
 
-/**
- * Count only known internal tables. This prevents accidental SQL identifier injection.
- */
+/** Count only known internal tables. */
 function getStatCount($table, $overrideKey = null) {
     if ($overrideKey) {
         $override = getSiteSetting($overrideKey);
         if ($override !== null && $override !== '') {
-            return (int)$override;
+            return max(0, (int)$override);
         }
     }
 
@@ -73,17 +80,20 @@ function getStatCount($table, $overrideKey = null) {
         return 0;
     }
 
-    $result = dbFetchOne("SELECT COUNT(*) as count FROM `{$table}`");
+    $result = dbFetchOne("SELECT COUNT(*) AS count FROM `{$table}`");
     return $result ? (int)$result['count'] : 0;
 }
 
 function logAdminAction($adminId, $action, $targetType, $targetId = null, $details = null) {
     dbInsert('audit_log', [
-        'admin_id' => $adminId,
+        'user_id' => $adminId,
+        'user_type' => 'admin',
         'action' => $action,
-        'target_type' => $targetType,
-        'target_id' => $targetId,
-        'details_json' => $details ? json_encode($details, JSON_UNESCAPED_UNICODE) : null,
+        'entity_type' => $targetType,
+        'entity_id' => $targetId,
+        'new_values' => $details !== null ? json_encode($details, JSON_UNESCAPED_UNICODE) : null,
+        'ip_address' => getClientIp(),
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? null,
         'created_at' => date('Y-m-d H:i:s')
     ]);
 }
@@ -128,14 +138,14 @@ function requireUser() {
 
 function getOrCreateChatThread($userId) {
     $thread = dbFetchOne(
-        "SELECT * FROM chat_threads WHERE user_id = :user_id",
+        "SELECT * FROM chat_threads WHERE user_id = :user_id ORDER BY updated_at DESC LIMIT 1",
         ['user_id' => $userId]
     );
 
     if (!$thread) {
         $threadId = dbInsert('chat_threads', [
             'user_id' => $userId,
-            'created_at' => date('Y-m-d H:i:s')
+            'status' => 'open'
         ]);
         $thread = dbFetchOne("SELECT * FROM chat_threads WHERE id = :id", ['id' => $threadId]);
     }
