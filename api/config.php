@@ -1,9 +1,4 @@
 <?php
-/**
- * API Configuration and Common Functions
- * Handles authentication, rate limiting, and JSON responses.
- */
-
 require_once __DIR__ . '/../includes/config.php';
 require_once __DIR__ . '/../includes/database.php';
 require_once __DIR__ . '/../includes/security.php';
@@ -15,13 +10,15 @@ if (session_status() === PHP_SESSION_ACTIVE) {
     session_write_close();
 }
 
-function apiResponse($data, $statusCode = 200) {
+function apiResponse($data, $statusCode = 200): void
+{
     http_response_code($statusCode);
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
-function apiError($message, $statusCode, $fields = null) {
+function apiError($message, $statusCode, $fields = null): void
+{
     $response = ['success' => false, 'error' => $message];
     if ($fields !== null) {
         $response['fields'] = $fields;
@@ -29,116 +26,107 @@ function apiError($message, $statusCode, $fields = null) {
     apiResponse($response, $statusCode);
 }
 
-function getRateLimitKey($useToken = false, $tokenUserId = null) {
-    if ($useToken && $tokenUserId) {
-        return 'token_' . (int)$tokenUserId;
-    }
-    return 'ip_' . getClientIp();
+function getRateLimitKey($useToken = false, $tokenUserId = null): string
+{
+    return $useToken && $tokenUserId ? 'token_' . (int) $tokenUserId : 'ip_' . getClientIp();
 }
 
-function checkRateLimit($limit, $windowSeconds = 60, $key = null) {
-    if ($key === null) {
-        $key = getRateLimitKey();
-    }
-
+function checkRateLimit($limit, $windowSeconds = 60, $key = null): bool
+{
+    $key = $key ?? getRateLimitKey();
     $pdo = getDbConnection();
-    $now = time();
-    $windowStart = $now - $windowSeconds;
+    $now = date('Y-m-d H:i:s');
+    $cutoff = date('Y-m-d H:i:s', time() - $windowSeconds);
+    $stmt = $pdo->prepare('SELECT id, attempts, last_attempt_at, blocked_until FROM rate_limits WHERE identifier = :identifier AND action = :action LIMIT 1');
+    $stmt->execute(['identifier' => $key, 'action' => 'api']);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    $pdo->prepare("DELETE FROM rate_limits WHERE created_at < FROM_UNIXTIME(?)")
-        ->execute([$windowStart]);
-
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM rate_limits WHERE `key` = ? AND created_at > FROM_UNIXTIME(?)");
-    $stmt->execute([$key, $windowStart]);
-    $count = (int)$stmt->fetchColumn();
-
-    if ($count >= $limit) {
+    if ($row && !empty($row['blocked_until']) && strtotime($row['blocked_until']) > time()) {
         return false;
     }
 
-    $pdo->prepare("INSERT INTO rate_limits (`key`, created_at) VALUES (?, FROM_UNIXTIME(?))")
-        ->execute([$key, $now]);
+    if (!$row || strtotime($row['last_attempt_at']) < strtotime($cutoff)) {
+        if ($row) {
+            $update = $pdo->prepare('UPDATE rate_limits SET attempts = 1, last_attempt_at = :now, blocked_until = NULL WHERE id = :id');
+            $update->execute(['now' => $now, 'id' => $row['id']]);
+        } else {
+            $insert = $pdo->prepare('INSERT INTO rate_limits (identifier, action, attempts, last_attempt_at) VALUES (:identifier, :action, 1, :now)');
+            $insert->execute(['identifier' => $key, 'action' => 'api', 'now' => $now]);
+        }
+        return true;
+    }
 
+    if ((int) $row['attempts'] >= $limit) {
+        $blockedUntil = date('Y-m-d H:i:s', time() + $windowSeconds);
+        $update = $pdo->prepare('UPDATE rate_limits SET blocked_until = :blocked WHERE id = :id');
+        $update->execute(['blocked' => $blockedUntil, 'id' => $row['id']]);
+        return false;
+    }
+
+    $update = $pdo->prepare('UPDATE rate_limits SET attempts = attempts + 1, last_attempt_at = :now WHERE id = :id');
+    $update->execute(['now' => $now, 'id' => $row['id']]);
     return true;
 }
 
-function validateApiToken($tokenHeader) {
-    if (empty($tokenHeader)) {
+function validateApiToken($tokenHeader)
+{
+    if (!$tokenHeader) {
         return false;
     }
-
     $parts = preg_split('/\s+/', trim($tokenHeader));
-    if (count($parts) !== 2 || strtolower($parts[0]) !== 'bearer' || $parts[1] === '') {
+    if (count($parts) !== 2 || strtolower($parts[0]) !== 'bearer' || !preg_match('/^[a-f0-9]{64}$/i', $parts[1])) {
         return false;
     }
-
-    $token = $parts[1];
-    $tokenData = dbFetchOne(
-        "SELECT user_id, expires_at FROM api_tokens WHERE token = ?",
-        [$token]
-    );
-
+    $tokenHash = hash('sha256', $parts[1]);
+    $tokenData = dbFetchOne('SELECT user_id, expires_at FROM api_tokens WHERE token_hash = :token_hash LIMIT 1', ['token_hash' => $tokenHash]);
     if (!$tokenData) {
         return false;
     }
-
-    if (strtotime($tokenData['expires_at']) < time()) {
-        dbDelete('api_tokens', 'token = ?', [$token]);
+    if (strtotime($tokenData['expires_at']) <= time()) {
+        dbDelete('api_tokens', 'token_hash = :token_hash', ['token_hash' => $tokenHash]);
         return false;
     }
-
-    return ['user_id' => (int)$tokenData['user_id']];
+    return ['user_id' => (int) $tokenData['user_id']];
 }
 
-function requireAuth() {
-    $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-    $tokenData = validateApiToken($authHeader);
-
+function requireAuth(): int
+{
+    $tokenData = validateApiToken($_SERVER['HTTP_AUTHORIZATION'] ?? '');
     if (!$tokenData) {
-        apiError('Autentifikatsiya talab qilinadi. Token topilmadi yoki muddati tugagan.', 401);
+        apiError('Autentifikatsiya talab qilinadi.', 401);
     }
-
     return $tokenData['user_id'];
 }
 
-/**
- * Verify ownership only against known user-owned tables.
- */
-function verifyOwnership($table, $id, $userId) {
+function verifyOwnership($table, $id, $userId): void
+{
     $allowedTables = ['applications', 'chat_threads'];
     if (!in_array($table, $allowedTables, true)) {
-        apiError('Noto\'g\'ri resurs turi.', 400);
+        apiError('Noto‘g‘ri resurs turi.', 400);
     }
-
-    $resource = dbFetchOne("SELECT user_id FROM `{$table}` WHERE id = ?", [$id]);
+    $resource = dbFetchOne("SELECT user_id FROM `{$table}` WHERE id = :id", ['id' => $id]);
     if (!$resource) {
         apiError('Resurs topilmadi.', 404);
     }
-
-    if ((int)$resource['user_id'] !== (int)$userId) {
-        apiError('Ushbu resursga kirish huquqingiz yo\'q.', 403);
+    if ((int) $resource['user_id'] !== (int) $userId) {
+        apiError('Ushbu resursga kirish huquqingiz yo‘q.', 403);
     }
 }
 
-function getPaginationParams() {
-    $page = max(1, (int)($_GET['page'] ?? 1));
-    $perPage = min(100, max(1, (int)($_GET['per_page'] ?? 20)));
-    return ['page' => $page, 'per_page' => $perPage];
+function getPaginationParams(): array
+{
+    return [
+        'page' => max(1, (int) ($_GET['page'] ?? 1)),
+        'per_page' => min(100, max(1, (int) ($_GET['per_page'] ?? 20)))
+    ];
 }
 
-function getPaginatedResults($sql, $params = [], $countSql = null, $countParams = []) {
+function getPaginatedResults($sql, $params = [], $countSql = null, $countParams = []): array
+{
     $pagination = getPaginationParams();
     $offset = ($pagination['page'] - 1) * $pagination['per_page'];
-    $fullSql = $sql . " LIMIT {$pagination['per_page']} OFFSET {$offset}";
-    $data = dbFetchAll($fullSql, $params);
-
-    if ($countSql === null) {
-        $total = count($data);
-    } else {
-        $countRow = dbFetchOne($countSql, $countParams);
-        $total = $countRow ? (int)$countRow['total'] : 0;
-    }
-
+    $data = dbFetchAll($sql . " LIMIT {$pagination['per_page']} OFFSET {$offset}", $params);
+    $total = $countSql === null ? count($data) : (int) (dbFetchOne($countSql, $countParams)['total'] ?? 0);
     return [
         'data' => $data,
         'page' => $pagination['page'],
