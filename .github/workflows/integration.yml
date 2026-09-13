@@ -45,6 +45,20 @@ jobs:
           SOON_DB_USER: root
           SOON_DB_PASS: root
         run: php tests/integration.php
+      - name: Security tests
+        env:
+          SOON_DB_HOST: 127.0.0.1
+          SOON_DB_NAME: soon_uz_test
+          SOON_DB_USER: root
+          SOON_DB_PASS: root
+        run: php tests/security.php
+      - name: RBAC tests
+        env:
+          SOON_DB_HOST: 127.0.0.1
+          SOON_DB_NAME: soon_uz_test
+          SOON_DB_USER: root
+          SOON_DB_PASS: root
+        run: php tests/rbac.php
       - name: Start application
         env:
           DB_HOST: 127.0.0.1
